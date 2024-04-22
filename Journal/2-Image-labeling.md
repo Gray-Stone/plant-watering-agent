@@ -44,3 +44,11 @@ Also should the plant part be included in the label? Would the plant half be hel
 
 * Segmentation vs Detection (bounding box)
 * Label include the plant or not
+
+
+
+## Existing datasets 
+
+Google Open Image Dataset. Does have flowerpot class pre-labeled.
+
+https://storage.googleapis.com/openimages/web/index.html

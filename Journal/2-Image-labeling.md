@@ -34,17 +34,22 @@ What should the training set be containing?
 * Include modern pots and vase, like those concrete and glass tubes.
 * Include every every thing, as long as it have plants in it, feed it to ML
 
+**Decision: Classic Pot Only (to start)**
+
 ## Labeling Choice: 
 
 There are segmentation and detection difference for ML, and each need differently labeled dataset.
 
 Also should the plant part be included in the label? Would the plant half be helpful on making the right decision about those glass tubes?
 
+**It could be something to try later, include the tree part into the label.**
+
 ### Decision Needed: 
 
 * Segmentation vs Detection (bounding box)
 * Label include the plant or not
 
+**Object detection will be faster. The segmentation is really more of a do I need it question.**
 
 
 ## Existing datasets 

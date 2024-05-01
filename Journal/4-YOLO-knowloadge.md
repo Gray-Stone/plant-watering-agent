@@ -1,11 +1,9 @@
 
+# Pretrained YOLO model
 
-# YOLO
+YOLOv8 Detection, segmentation are pre-trained on COCO dataset.
 
-## Recommendation on settings for training 
-
-https://docs.ultralytics.com/yolov5/tutorials/tips_for_best_training_results/#training-settings
-
+The classes in COCO contains `potted plant` and `vase` which are both what we want for detection.
 
 ## Yolo validation
 
@@ -16,7 +14,12 @@ https://github.com/ultralytics/yolov5/issues/7655
 This link https://github.com/ultralytics/yolov5/discussions/6023 Have similar problem as mine. The real data, is actual pot the robot need to find. However they will not be put into training process. So the resulting model will be very general and more useful.
 
 
-## Background images. 
+
+## Recommendation on settings for training 
+
+https://docs.ultralytics.com/yolov5/tutorials/tips_for_best_training_results/#training-settings
+
+### Background images. 
 
 Recommendation from Ultralytics: 
 > Background images are images with no objects that are added to a dataset to reduce False Positives (FP). We recommend about 0-10% background images to help reduce FPs (COCO has 1000 background images for reference, 1% of the total). No labels are required for background images.

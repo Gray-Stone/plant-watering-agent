@@ -1,4 +1,17 @@
 
+# New model 
+
+tutorial:
+
+```
+# Create a new YOLO model from scratch
+model = YOLO('yolov8n.yaml')
+```
+
+https://github.com/ultralytics/ultralytics/issues/2328
+
+
+
 # Pretrained YOLO model
 
 YOLOv8 Detection, segmentation are pre-trained on COCO dataset.
@@ -59,3 +72,7 @@ Should I be turning this off?
 `save` save the annotated images or videos to file. 
 
 This should be part of the work flow for evaluating model after train.
+
+# Note for segmentation:
+
+Model for segmentation is done with `-seg` sufix : `yolov8n-seg.yaml`

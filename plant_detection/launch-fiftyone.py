@@ -1,3 +1,5 @@
+#! /usr/bin/python3
+
 import fiftyone as fo
 import fiftyone.zoo as foz
 import fiftyone.utils.openimages as foo
@@ -13,7 +15,7 @@ import fiftyone.utils.openimages as foo
 # print(foo.get_classes())
 
 # exit(1)
-dataset = foz.load_zoo_dataset(
+dataset: fiftyone.core.dataset.Dataset = foz.load_zoo_dataset(
     "open-images-v7",
     split="train",
     max_samples=100,

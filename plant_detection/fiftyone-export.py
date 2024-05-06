@@ -16,21 +16,29 @@ import fiftyone.utils.yolo as fy
 # https://docs.voxel51.com/tutorials/open_images.html
 
 
-# print(foo.get_classes())
 
-# exit(1)
 dataset: fiftyone.core.dataset.Dataset = foz.load_zoo_dataset(
     "open-images-v7",
     split="train",
     max_samples=100,
     classes=["Flowerpot"] , # vase does have some good image, but might not be best
-    label_types=["detections","segmentations"],
+    label_types=["segmentations"],
     label_field="Flowerpot"
 )
 
-# fy.YOLOv5DatasetExporter(export_dir="../../image_fiftyone/" , split="train" , export_media="symlink",)
+# session = fo.launch_app(dataset)
+# while True:
+#     pass
 
-dataset.export(export_dir="../../image_fiftyone/yolo5",
-               dataset_type=fiftyone.types.YOLOv5Dataset,
-               classes=["Flowerpot"])
+
+
+y5x= fy.YOLOv5DatasetExporter(export_dir="../../image_fiftyone_2/" , split="train" , export_media="symlink",)
+
+# print(f"label _fields { dataset._get_label_field_type('Flowerpot')}")
+
+dataset.export(export_dir="../../image_fiftyone2/yolo5",
+               dataset_type=fiftyone.types.COCODetectionDataset,
+               progress = True,
+               classes=["Flowerpot"],
+               )
 # dataset.export(export_dir="../../image_fiftyone/coco",dataset_type=fiftyone.types.COCODetectionDataset ,classes=["Flowerpot"])

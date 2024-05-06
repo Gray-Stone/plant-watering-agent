@@ -24,3 +24,14 @@ Here is the instruction for swapping out custom names.
 https://github.com/ultralytics/ultralytics/issues/4956#issuecomment-2038655766
 
 The catch is the renaming must be done from the tensor side. changeing it in YOLO doesn't affect anything. 
+
+
+## Quick look at effectiveness of the pretrained model
+
+Using just the pre-trained model, It is able to detect the plants to some degree.
+
+This image show it's detection of the plant using just the pertained `yolov8n.pt` model.
+
+![](medias/YOLO-pretrain-pottedplant-detect.png)
+
+We can see it is doing ok on finding the plants, with the catch being it includes all the leaves part into it. This could be a problem in future when a plant's leave is super spread out, the detection might not be able to find the pot properly. (but this would then also depends on the point cloud cutting of things.)

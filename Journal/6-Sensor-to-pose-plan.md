@@ -18,3 +18,6 @@ The task is cut up as
 To find the 3d point cloud, the quickest solution would be let YOLO do segmentation on the 2d image. Then map the result mask to 3d point cloud on the rgbd camera. With knowing how the camera have moved, the following images will keep providing 3d point cloud that could be part of the pot. Accumulate these over time with probability could give us a confident map of the pot's voxels.
 
 The known voxels for the pot is then put into point cloud processing to find the top rim of it. Then we find a way to check if a pose will be valid for the given rim.
+
+
+**This plan is put on hold in favor for exploring the End to End ML solution**

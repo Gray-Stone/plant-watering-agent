@@ -14,13 +14,20 @@ import fiftyone.utils.yolo as fy
 
 # Options are actually mostly in here:
 # https://docs.voxel51.com/tutorials/open_images.html
+import argparse
+import pathlib
 
+parser = argparse.ArgumentParser()
+parser.add_argument("output_dir" , type=pathlib.Path ,help="path to Yolo yaml file")
+
+args = parser.parse_args()
+output_dir : pathlib.Path = args.output_dir
 
 
 dataset: fiftyone.core.dataset.Dataset = foz.load_zoo_dataset(
     "open-images-v7",
     split="train",
-    max_samples=100,
+    max_samples=1000,
     classes=["Flowerpot"] , # vase does have some good image, but might not be best
     label_types=["segmentations"],
     label_field="Flowerpot"
@@ -31,12 +38,9 @@ dataset: fiftyone.core.dataset.Dataset = foz.load_zoo_dataset(
 #     pass
 
 
-
-y5x= fy.YOLOv5DatasetExporter(export_dir="../../image_fiftyone_2/" , split="train" , export_media="symlink",)
-
 # print(f"label _fields { dataset._get_label_field_type('Flowerpot')}")
 
-dataset.export(export_dir="../../image_fiftyone2/yolo5",
+dataset.export(export_dir=str(output_dir),
                dataset_type=fiftyone.types.COCODetectionDataset,
                progress = True,
                classes=["Flowerpot"],

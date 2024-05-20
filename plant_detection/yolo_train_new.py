@@ -17,6 +17,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("data_yaml" , type=pathlib.Path ,help="path to Yolo yaml file")
+    parser.add_argument("--proj" , type=str , help="project name" ,default="yolo_train")
+    parser.add_argument("--seg" , action="store_true" , help="do segmentation when set" ,default=False)
+
 
     args = parser.parse_args()
     data_yaml_path : pathlib.Path = args.data_yaml
@@ -29,12 +32,18 @@ if __name__ == "__main__":
 
 
     # WTF?  YOLO' model does not support '_new' mode for 'segmentation' task yet.
-    model = YOLO('yolov8n-seg.yaml')
+
+    if args.seg:
+        print("Training segmentation model")
+        model = YOLO('yolov8n-seg.yaml')
+    else: 
+        print("Training bbox model")
+        model = YOLO('yolov8n.yaml')
     # https://docs.ultralytics.com/reference/engine/model/#ultralytics.engine.model.Model.train
     model.train(
         data=data_yaml_path.resolve(),
         epochs=200,
-        project="trains_clean",
+        project=args.proj,
         pretrained = True,
         save=True,
         save_period=5,
@@ -42,7 +51,6 @@ if __name__ == "__main__":
     )
 
     # If I used     model = YOLO('yolov8n-seg.yaml'), then I can't save
-    
-    model.save("newly_trained.pt")
     list_model_classes(model)
+    model.save("newly_trained.pt")
 

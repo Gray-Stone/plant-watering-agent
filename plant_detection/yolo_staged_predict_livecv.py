@@ -50,7 +50,7 @@ if __name__ == "__main__":
     # Let user
     parser = argparse.ArgumentParser()
     # parser.add_argument("target_img_dir" , type=pathlib.Path ,help="path to Yolo yaml file")
-    parser.add_argument("--model" , default='yolov8n.pt' , type=str ,help="model.pt file")
+    parser.add_argument("model", type=str ,help="bbox-model-file")
 
     args = parser.parse_args()
     # target_image_dir : pathlib.Path = args.target_img_dir
@@ -64,7 +64,9 @@ if __name__ == "__main__":
 
     model = YOLO(args.model)
 
-    cap = cv2.VideoCapture(6)
+    cap = cv2.VideoCapture(0)
+    cv2.namedWindow("Input" , cv2.WINDOW_NORMAL)
+    cv2.namedWindow("region" , cv2.WINDOW_NORMAL)
 
     if not cap.isOpened():
         raise IOError("Cannot open webcam")
@@ -75,22 +77,28 @@ if __name__ == "__main__":
         for r in results:
             # boxes = r.boxes
 
-            # for box in boxes:
-            #     # bounding box
-            #     x1, y1, x2, y2 = box.xyxy[0]
-            #     x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2) # convert to int values
-            #     cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 3)
-            #     confidence = math.ceil((box.conf[0]*100))/100
+            if r.boxes is not None:
+                for box in r.boxes:
+                    print(f"box_xyxy {box.xyxy}")
+                    x1, y1, x2, y2 = box.xyxy[0]
+                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2) # convert to int values
 
-            #     text_origion = [x1, y1]
-            #     cv2.putText(frame, f"{confidence}", text_origion , cv2.FONT_HERSHEY_PLAIN , 2,(255, 0, 255) )
 
-            for mask in r.masks:
-                masked_input = overlay(frame , mask, color=(0,0,255) , alpha=0.2)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 3)
+                #     confidence = math.ceil((box.conf[0]*100))/100
+
+                #     text_origion = [x1, y1]
+                #     cv2.putText(frame, f"{confidence}", text_origion , cv2.FONT_HERSHEY_PLAIN , 2,(255, 0, 255) )
+
+                    box_region =     region = frame[y1:y2 , x1:x2 , :]
+                    cv2.imshow("region" , box_region)
+            if r.masks is not None:
+                for mask in r.masks:
+                    masked_frame = overlay(frame , mask, color=(0,0,255) , alpha=0.2)
         cv2.imshow('Input', frame)
 
 
-        c = cv2.waitKey(1)
+        c = cv2.waitKey(50)
         if c == 27:
             break
 

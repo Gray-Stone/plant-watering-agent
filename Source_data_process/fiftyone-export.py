@@ -27,22 +27,15 @@ output_dir : pathlib.Path = args.output_dir
 dataset: fiftyone.core.dataset.Dataset = foz.load_zoo_dataset(
     "open-images-v7",
     split="train",
-    max_samples=1000,
+    max_samples=500,
     classes=["Flowerpot"] , # vase does have some good image, but might not be best
     label_types=["segmentations"],
     label_field="Flowerpot"
 )
 
-# session = fo.launch_app(dataset)
-# while True:
-#     pass
-
-
-# print(f"label _fields { dataset._get_label_field_type('Flowerpot')}")
-
+# Don't try to directly do bbox with yolo either. The output is always val only.
 dataset.export(export_dir=str(output_dir),
                dataset_type=fiftyone.types.COCODetectionDataset,
                progress = True,
                classes=["Flowerpot"],
                )
-# dataset.export(export_dir="../../image_fiftyone/coco",dataset_type=fiftyone.types.COCODetectionDataset ,classes=["Flowerpot"])

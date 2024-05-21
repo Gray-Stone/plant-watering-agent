@@ -117,6 +117,8 @@ if __name__ == "__main__":
     cv2.namedWindow("masked_region" , cv2.WINDOW_NORMAL)
     cv2.namedWindow("direct_seg" , cv2.WINDOW_NORMAL)
 
+    BOX_REGION_PADDING = 20
+
     if not cap.isOpened():
         raise IOError("Cannot open webcam")
     while True:
@@ -129,6 +131,8 @@ if __name__ == "__main__":
             box_mask_list = []
             box_regions = []
             if r.boxes is not None:
+                frame_masked = frame.copy()
+
                 for box in r.boxes:
                     print(f"box_xyxy {box.xyxy}")
                     x1, y1, x2, y2 = box.xyxy[0]
@@ -136,20 +140,20 @@ if __name__ == "__main__":
                     print(f"box xyxy {x1}, {y1}, {x2}, {y2}")
 
 
-                    region_x1 = max(x1-10,0)
-                    region_y1 = max(y1-10,0)
-                    region_x2 = min(x2+10 , frame_x)
-                    region_y2 = min(y2+10 , frame_y)
+                    region_x1 = max(x1-BOX_REGION_PADDING,0)
+                    region_y1 = max(y1-BOX_REGION_PADDING,0)
+                    region_x2 = min(x2+BOX_REGION_PADDING , frame_x)
+                    region_y2 = min(y2+BOX_REGION_PADDING , frame_y)
 
                     box_region =frame[region_y1:region_y2 , region_x1:region_x2 , :].copy()
                     box_region_size_y , box_region_size_x , _ = box_region.shape
 
 
-                    cv2.rectangle(frame, (x1-1, y1-1), (x2+1, y2+1), (255, 0, 255), 2)
+                    cv2.rectangle(frame_masked, (x1-1, y1-1), (x2+1, y2+1), (255, 0, 255), 2)
                     confidence = math.ceil((box.conf[0]*100))/100
 
                     text_origion = [x1, y1]
-                    cv2.putText(frame, f"{confidence}", text_origion , cv2.FONT_HERSHEY_PLAIN , 2,(255, 0, 255) )
+                    cv2.putText(frame_masked, f"{confidence}", text_origion , cv2.FONT_HERSHEY_PLAIN , 2,(255, 0, 255) )
 
 
                     seg_results = seg_model.predict(box_region)
@@ -191,29 +195,31 @@ if __name__ == "__main__":
 
                 combined_mask = np.full((frame_y, frame_x) , 0 , dtype=np.uint8)
                 red_img = np.zeros(frame.shape , dtype=frame.dtype)
-                red_img[:] =(0,0,255)
+                red_img[:] =(30,30,255)
                 print(f"Total of {len(overall_masks)}")
-                frame_masked = frame.copy()
                 for mask in overall_masks:
                     # print(f"mask_ size {mask.dtype} , combined _amsk {combined_mask.dtype}")
                     # combined_mask= cv2.bitwise_or(combined_mask , mask)
                     red_mask = cv2.bitwise_and(red_img ,red_img, mask=mask)
                     # cv2.imshow("masked_region" , red_mask)
                     
-                    frame_masked = cv2.addWeighted(frame_masked,1,red_mask,0.2,0.0)
+                    frame_masked = cv2.addWeighted(frame_masked,1,red_mask,0.3,0.0)
                 
 
-                
-                cv2.imshow("cropped_yolo_seg", get_one_image(box_regions))
+                stacked_regions = get_one_image(box_regions)
+                stacked_regions_y,_,_ = stacked_regions.shape
+                if (stacked_regions_y > 1080):
+                    scale_f = 1080 / stacked_regions_y
+                cv2.imshow("cropped_yolo_seg", cv2.resize(stacked_regions , None,fx=scale_f , fy= scale_f) )
 
                 #         # masked_frame = overlay(box_region , mask, color=(0,0,255) , alpha=0.2)
 
-                cv2.imshow("masked_region" , cv2.resize(frame_masked,None,fx=0.3,fy=0.3))
+                cv2.imshow("masked_region" , cv2.resize(frame_masked,None,fx=0.49,fy=0.49))
 
         print(f"box_mask_count = {box_mask_list}")
 
         direct_seg_results = seg_model.predict(frame)
-        cv2.imshow('direct_seg', cv2.resize(direct_seg_results[0].plot() , None,fx=0.3,fy=0.3))
+        cv2.imshow('direct_seg', cv2.resize(direct_seg_results[0].plot() , None,fx=0.49,fy=0.49))
 
 
         c = cv2.waitKey(150)

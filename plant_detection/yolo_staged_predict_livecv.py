@@ -208,6 +208,7 @@ if __name__ == "__main__":
 
                 stacked_regions = get_one_image(box_regions)
                 stacked_regions_y,_,_ = stacked_regions.shape
+                scale_f=1
                 if (stacked_regions_y > 1080):
                     scale_f = 1080 / stacked_regions_y
                 cv2.imshow("cropped_yolo_seg", cv2.resize(stacked_regions , None,fx=scale_f , fy= scale_f) )

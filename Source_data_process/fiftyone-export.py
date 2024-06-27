@@ -24,11 +24,13 @@ args = parser.parse_args()
 output_dir : pathlib.Path = args.output_dir
 
 
+class_list = ["Flowerpot" , "Flower"]
+
 dataset: fiftyone.core.dataset.Dataset = foz.load_zoo_dataset(
     "open-images-v7",
     split="train",
     max_samples=500,
-    classes=["Flowerpot"] , # vase does have some good image, but might not be best
+    classes=class_list , # vase does have some good image, but might not be best
     label_types=["segmentations"],
     label_field="Flowerpot"
 )
@@ -37,5 +39,5 @@ dataset: fiftyone.core.dataset.Dataset = foz.load_zoo_dataset(
 dataset.export(export_dir=str(output_dir),
                dataset_type=fiftyone.types.COCODetectionDataset,
                progress = True,
-               classes=["Flowerpot"],
+               classes=class_list,
                )

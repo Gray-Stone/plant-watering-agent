@@ -17,7 +17,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("data_yaml" , type=pathlib.Path ,help="path to Yolo yaml file")
-    parser.add_argument("--proj" , type=str , help="project name" ,default="yolo_train")
+    parser.add_argument("--proj" , type=str , help="project name" ,default="train-new")
+    parser.add_argument("-e" , "--epoch" , type=int , help="number of epoch to train" ,default="100")
     parser.add_argument("--seg" , action="store_true" , help="do segmentation when set" ,default=False)
 
 
@@ -42,7 +43,7 @@ if __name__ == "__main__":
     # https://docs.ultralytics.com/reference/engine/model/#ultralytics.engine.model.Model.train
     model.train(
         data=data_yaml_path.resolve(),
-        epochs=200,
+        epochs=args.epoch,
         project=args.proj,
         pretrained = True,
         save=True,

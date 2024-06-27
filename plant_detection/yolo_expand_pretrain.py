@@ -17,7 +17,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("base_model", type = pathlib.Path , help="existing model file")
     parser.add_argument("data_yaml" , type=pathlib.Path ,help="path to Yolo yaml file")
-    parser.add_argument("--proj" , type=str , help="project name" ,default="cont_train")
+    parser.add_argument("--proj" , type=str , help="project name" ,default="train-cont")
 
     args = parser.parse_args()
     data_yaml_path : pathlib.Path = args.data_yaml

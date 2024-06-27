@@ -80,6 +80,7 @@ if __name__ == "__main__":
         use_image = True
 
     model = YOLO(args.model)
+    colors = [(30,30,255),(30,255,30),(255,30,30)]
 
     cap = cv2.VideoCapture(6)
     cv2.namedWindow("Input" , cv2.WINDOW_NORMAL)
@@ -97,13 +98,19 @@ if __name__ == "__main__":
 
         frame_size_y , frame_size_x , _ = frame.shape
         results = model.predict(frame , stream=True)
+        i = 0
+        masked_image = frame.copy()
+        bbox_image = frame.copy()
 
         for r in results:
             # boxes = r.boxes
             bbox_list = []
             mask_list = []
             print(f"Class Name {r.names}")
-
+            color = colors[i]
+            i = i+1
+            if i == len(colors):
+                i=0
             # print(f"bboxs \n {r.boxes}")
             if r.boxes is not None:
                 for box in r.boxes:
@@ -127,15 +134,13 @@ if __name__ == "__main__":
                     # print(f" mask scaled shape {mask_scaled.shape}")
                     mask_list.append(mask_scaled)
 
-        masked_image = frame.copy()
-        bbox_image = frame.copy()
-
-        for b in bbox_list:
-            x1, y1, x2, y2 = b
-            cv2.rectangle(bbox_image, (x1, y1), (x2, y2), (255, 0, 255), 3)
+            
+            for b in bbox_list:
+                x1, y1, x2, y2 = b
+                cv2.rectangle(bbox_image, (x1, y1), (x2, y2), color, 3)
 
 
-        masked_image = overlay_masks(masked_image ,mask_list )
+            masked_image = overlay_masks(masked_image ,mask_list ,color)
 
         cv2.imshow('bbox', bbox_image)
         cv2.imshow('mask', masked_image)

@@ -33,11 +33,11 @@ if __name__ == "__main__":
 
     # current_path = pathlib.Path().resolve()
 
-    for r in results:
-        file_path = pathlib.Path(r.path).resolve()
-        # maybe save this.
-        # r.show()
-        print(f"masks \n{r.masks}")
+    # for r in results:
+    #     file_path = pathlib.Path(r.path).resolve()
+    #     # maybe save this.
+    #     # r.show()
+    #     print(f"masks \n{r.masks}")
 
 def list_model_classes(model):
     print(f"Model have following classes: {model.names} ")

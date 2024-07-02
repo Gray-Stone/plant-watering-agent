@@ -76,3 +76,8 @@ This should be part of the work flow for evaluating model after train.
 # Note for segmentation:
 
 Model for segmentation is done with `-seg` sufix : `yolov8n-seg.yaml`
+
+
+The mask prediction output seems to be linked with bbox, so the class info is only recovered from bbox side.
+
+https://stackoverflow.com/questions/76168470/how-to-create-a-binary-mask-from-a-yolo8-segmentation-result

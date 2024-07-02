@@ -18,6 +18,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("data_yaml" , type=pathlib.Path ,help="path to Yolo yaml file")
     parser.add_argument("--proj" , type=str , help="project name" ,default="train-new")
+    parser.add_argument("--name" , type=str , help="instance name" ,)
     parser.add_argument("-e" , "--epoch" , type=int , help="number of epoch to train" ,default="100")
     parser.add_argument("--seg" , action="store_true" , help="do segmentation when set" ,default=False)
 
@@ -45,6 +46,7 @@ if __name__ == "__main__":
         data=data_yaml_path.resolve(),
         epochs=args.epoch,
         project=args.proj,
+        name=args.name,
         pretrained = True,
         save=True,
         save_period=5,

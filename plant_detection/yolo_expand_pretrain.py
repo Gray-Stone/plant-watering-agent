@@ -18,6 +18,7 @@ if __name__ == "__main__":
     parser.add_argument("base_model", type = pathlib.Path , help="existing model file")
     parser.add_argument("data_yaml" , type=pathlib.Path ,help="path to Yolo yaml file")
     parser.add_argument("--proj" , type=str , help="project name" ,default="train-cont")
+    parser.add_argument("--name" , type=str , help="instance name" ,)
 
     args = parser.parse_args()
     data_yaml_path : pathlib.Path = args.data_yaml
@@ -43,6 +44,8 @@ if __name__ == "__main__":
         data=data_yaml_path.resolve(),
         epochs=300,
         project=args.proj,
+        name=args.name,
+
         # WTF is this ? 
         pretrained = False,
         save=True,

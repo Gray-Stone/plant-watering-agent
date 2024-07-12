@@ -11,11 +11,6 @@ Point cloud transport is also a thing
 
 https://discourse.ros.org/t/point-cloud-transport-is-here/31990
 
-## Rtabmap
-
-According to the topic name, Rtabmap should be already publishing octomap, however it doesn't seems to in the topic type.
-
-`stretch_ros` repo have a separate octomap package. should checkout what is that  
 
 
 ## Tried octomap package
@@ -29,3 +24,5 @@ The octomap generated looks ok. However there are no slam in this, which means e
 With the default setting and default rviz config from their octomap package, The bandwidth issue is still not solved. As soon as I launch a rviz on remote machine, the systems starts to be very not responsive. This is because the default rviz can only take pointcloud format, which is much larger then octomap. 
 
 When installed `octomap_rviz_plugins`, rviz is then able to display binary octomap. Which is a lot better in terms of bandwidth usage. When using rviz like this, the system is still responsive (occasional jitter)
+
+

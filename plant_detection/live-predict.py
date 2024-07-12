@@ -14,24 +14,6 @@ import cv2
 import math
 import numpy as np
 
-def overlay_masks(output_frame: np.ndarray, mask_list :list[any] , color =(30,30,255) , alpha = 0.3):
-    """Takes an output frame, list of masks. Overlay all masks onto output
-
-
-    Args:
-        output_frame (_type_): output image
-        mask_list (): list of masks.
-        color (tuple, optional): color of masked area. Defaults to (30,30,255).
-        alpha float: alpha (transparent ness) for each mask, default to 0.3
-    """
-
-    color_slice = np.zeros(output_frame.shape , dtype=output_frame.dtype)
-    color_slice[:] =color
-    for mask in mask_list:
-        color_mask = cv2.bitwise_and(color_slice,color_slice , mask=mask)
-        output_frame = cv2.addWeighted(output_frame, 1, color_mask , alpha , 0)
-
-    return output_frame
 
 @dataclasses.dataclass
 class ObjectInfo():
@@ -39,6 +21,9 @@ class ObjectInfo():
     cls : int
     confidence : float
     mask : np.ndarray
+    outline_xy: np.ndarray
+
+
 
 class Detector():
     def __init__(self , model) -> None:
@@ -67,11 +52,30 @@ class Detector():
         mask_raw = (mask_raw*255).astype(np.uint8)
         # print(f" mask raw shape {mask_raw.shape}")
         mask_scaled = cv2.resize(mask_raw, (frame_size_x, frame_size_y))
-        return mask_scaled
+
+        print(f"mask xy type {type(mask.xy)}")
+        print(f"mask_len {len(mask.xy[0])}")
+
+        # out_frame = np.ndarray(frame_size,dtype=np.uint8)
+        # for xy in mask.xy[0]:
+        #     x,y = xy
+        #     # out_frame = cv2.circle(out_frame , ( int(x),int(y) ),1,(255),thickness=-1)
+        #     outline_xy.append( ( int(x),int(y) ) )
+        # cv2.imshow("debug" , out_frame)
+
+        outline_xy = mask.xy[0].astype(np.uint8)
+
+        return mask_scaled, outline_xy
 
     def DetectOnce(self,frame)->dict[list[ObjectInfo]]:
         frame_size_y , frame_size_x , _ = frame.shape
         results = list(self.model.predict(frame , stream=True))
+        self._last_frame_size = frame.shape
+        self._blank_color_frames =[]
+        for color in self.color_list:
+            color_blank = np.zeros(frame.shape , dtype=frame.dtype)
+            color_blank[:] = color
+            self._blank_color_frames.append(color_blank)
 
         if len(results) > 1:
             # I guess the list of result is for handling multiple images.
@@ -79,7 +83,7 @@ class Detector():
             print(f"len of result {len(results)}")
 
         result = results[0]
-        
+
         if not result.boxes:
             return {} , []
         print(f"len of boxes {len(result.boxes)}")
@@ -89,8 +93,8 @@ class Detector():
         obj_info_list = []
         for box, mask in zip(result.boxes , result.masks):
             xyxy_pix , obj_class , confidence = self.DecodeBbox(box)
-            segment_mask = self.DecodeMask(mask , (frame_size_y , frame_size_x))
-            obj_info = ObjectInfo(xyxy_pix , obj_class , confidence , segment_mask)
+            segment_mask , outline_xy = self.DecodeMask(mask , (frame_size_y , frame_size_x))
+            obj_info = ObjectInfo(xyxy_pix , obj_class , confidence , segment_mask , outline_xy)
             if obj_class in obj_info_map:
                 obj_info_map[obj_class].append(obj_info)
             else:
@@ -99,7 +103,7 @@ class Detector():
 
         return obj_info_map , obj_info_list
 
-    def PlotObjects(self,frame , object_infos:list[ObjectInfo] ):
+    def PlotObjects(self,frame , object_infos:list[ObjectInfo] , domask = True):
 
         BOX_BORDER_THICKNESS = 3
         MASK_ALPHA = 0.3
@@ -128,12 +132,13 @@ class Detector():
                 self.color_list[info.cls],
                 thickness=FONT_THICKNESS,
             )
-            color_mask = cv2.bitwise_and(
-                self._blank_color_frames[info.cls],
-                self._blank_color_frames[info.cls],
-                mask=info.mask,
-            )
-            frame = cv2.addWeighted(frame, 1, color_mask, MASK_ALPHA, 0)
+            if domask:
+                color_mask = cv2.bitwise_and(
+                    self._blank_color_frames[info.cls],
+                    self._blank_color_frames[info.cls],
+                    mask=info.mask,
+                )
+                frame = cv2.addWeighted(frame, 1, color_mask, MASK_ALPHA, 0)
         return frame
 
 
@@ -158,7 +163,7 @@ if __name__ == "__main__":
 
     cv2.namedWindow("input" , cv2.WINDOW_NORMAL)
     cv2.namedWindow("labeled_image" , cv2.WINDOW_NORMAL)
-    # cv2.namedWindow("debug" , cv2.WINDOW_NORMAL)
+    cv2.namedWindow("debug" , cv2.WINDOW_NORMAL)
     # cv2.namedWindow("mask" , cv2.WINDOW_NORMAL)
 
     model = YOLO(args.model)
@@ -170,13 +175,25 @@ if __name__ == "__main__":
             frame = cv2.imread(args.image)
         else:
             ret, frame = cap.read()
-        
+
         obj_info_map , obj_info_list = detector.DetectOnce(frame)
 
         for key,val in obj_info_map.items():
             print(f" Cls: {key} have {len(val)} number of items ")
-        
+
         labeled_frame =detector.PlotObjects(frame.copy() , obj_info_list)
+
+        for obj_info in obj_info_list:
+            # Only extreme outer contours
+            # cv.CHAIN_APPROX_SIMPLE  cv.CHAIN_APPROX_TC89_L1  cv.CHAIN_APPROX_TC89_KCOS
+            contours, hierarchy = cv2.findContours(
+                obj_info.mask,
+                mode=cv2.RETR_EXTERNAL,
+                method=cv2.CHAIN_APPROX_TC89_L1,
+            )
+            print(f"countours {contours}")
+            cv2.drawContours(frame,contours , 0,color=detector.color_list[obj_info.cls])
+
 
         cv2.imshow("input" , frame)
         cv2.imshow('labeled_image', labeled_frame)

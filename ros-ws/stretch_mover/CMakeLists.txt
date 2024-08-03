@@ -37,12 +37,12 @@ install(PROGRAMS
   scripts/QuickTrajTest.py  
   DESTINATION lib/${PROJECT_NAME} )
 
-# install(DIRECTORY
-#   launch
-#   meshes
-#   config # urdf and srdf are under config
+install(DIRECTORY
+  launch
+  config
+  models
   
-#   DESTINATION share/${PROJECT_NAME}/)
+  DESTINATION share/${PROJECT_NAME}/)
 
 
 

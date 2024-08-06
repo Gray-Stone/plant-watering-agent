@@ -6,6 +6,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
+from pathlib import Path
 
 def generate_launch_description():
     stretch_core_path = get_package_share_directory('stretch_core')
@@ -14,8 +15,10 @@ def generate_launch_description():
     stretch_navigation_path = get_package_share_directory('stretch_nav2')
 
     rviz_param = DeclareLaunchArgument('use_rviz', default_value='true', choices=['true', 'false'])
+    # rviz_config = DeclareLaunchArgument('rviz_config',
+    #                                     default_value=stretch_mover_share + '/' + 'config/rtabmap.rviz')
     rviz_config = DeclareLaunchArgument('rviz_config',
-                                        default_value=stretch_mover_share + '/' + 'config/rtabmap.rviz')
+                                        default_value=str(Path(stretch_mover_share) / 'config/rtabmap.rviz'))
 
     teleop_type_param = DeclareLaunchArgument(
         'teleop_type', default_value="joystick", description="how to teleop ('keyboard', 'joystick' or 'none')")
@@ -32,9 +35,9 @@ def generate_launch_description():
         # There might be a slight performance issue.
         # "wait_for_transform": 0.2,
 
-        # Don't set these to zero. That will cause rtabmap updating too much, which lag out the machine and even cause normal robot state publisher to lag too much 
-        "RGBD/LinearUpdate": '0.05',
-        "RGBD/AngularUpdate": '0.3',
+        # Angular update to 0 doesn't actually keep updating it, linear update to 0 will do the trick
+        "RGBD/LinearUpdate": '0.00',
+        "RGBD/AngularUpdate": '0.1',
 
         "RGBD/CreateOccupancyGrid": 'True',
         # Haven't see other diff robot using this.
@@ -47,8 +50,9 @@ def generate_launch_description():
         "Grid/FootprintHeight": "0.6",
 
         "Grid/MaxObstacleHeight": '2.0',
-        "Grid/MaxGroundHeight": '0.01',
+        "Grid/MaxGroundHeight": '0.02',
         "Grid/RayTracing": 'True',
+        # "Grid/CellSize": 0.05 # default 0.05
     }
     rtabmap_mapping_node = Node(
         package='rtabmap_slam',

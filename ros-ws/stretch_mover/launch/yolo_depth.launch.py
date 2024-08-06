@@ -42,6 +42,6 @@ def generate_launch_description():
 
 
     return LaunchDescription([
-        yolo_process,
-        # depth_process,
+        # yolo_process,
+        depth_process,
     ])

@@ -5,6 +5,7 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/header.hpp>
+#include <builtin_interfaces/msg/time.hpp>
 
 #include <cv_bridge/cv_bridge.h>
 #include <image_geometry/pinhole_camera_model.h>
@@ -27,6 +28,7 @@
 #include <opencv2/opencv.hpp>
 #include <pcl/common/centroid.h>
 #include <pcl/common/common.h>
+#include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -60,10 +62,24 @@ private:
   bool debug_;
   bool verbose_;
 
+  // Helpers
+
+  std::optional<geometry_msgs::msg::TransformStamped> GetTF(const std::string &target_frame,
+                                                            const std::string &sourec_frame, 
+                                                            builtin_interfaces::msg::Time stamp) {
+    try {
+      auto map_base_tf = tf_buffer_->lookupTransform( target_frame , sourec_frame,stamp );
+      return map_base_tf;
+    } catch (const tf2::TransformException &ex) {
+      RCLCPP_WARN_STREAM(get_logger(), "Could not transform map to wx200/base_link: " << ex.what());
+      // TODO ignore it if can't find a good transform
+      return std::nullopt;
+    }
+  }
+
   // Callbacks
 
-  void
-  syncCallback(const sensor_msgs::msg::CameraInfo::ConstSharedPtr &camera_info_ptr,
+  void syncCallback(const sensor_msgs::msg::CameraInfo::ConstSharedPtr &camera_info_ptr,
                const sensor_msgs::msg::Image::ConstSharedPtr &depth_image_ptr,
                const stretch_mover::msg::YoloDetectionList::ConstSharedPtr &yolo_detection_list) {
     if (debug_ && verbose_) {
@@ -92,6 +108,15 @@ private:
 
     pcl::PointCloud<pcl::PointXYZL> debug_combined_cloud;
 
+    // Assume mask, depth all use the same frame.
+    auto maybe_tf = GetTF( world_frame_, depth_image_ptr->header.frame_id, depth_image_ptr->header.stamp );
+    if (! maybe_tf.has_value()) {
+      RCLCPP_WARN(get_logger(), "TF look up error, skipping this cycle");
+      return ;
+    }
+    geometry_msgs::msg::TransformStamped depth_world_tf = maybe_tf.value();
+    // tf_buffer_->lookupTransform(world_frame_, depth_image_ptr->header.frame_id, depth_image_ptr->header.stamp);
+    Eigen::Affine3f depth_world_eigen_tf = tf2::transformToEigen(depth_world_tf.transform).cast<float>();
 
     for (size_t i = 0; i < yolo_detection_list->detections.size(); ++i) {
       stretch_mover::msg::YoloDetection det = yolo_detection_list->detections[i];
@@ -130,14 +155,23 @@ private:
         RCLCPP_INFO_STREAM(get_logger(), "get new cloud " << new_cloud.width);
       }
 
+      pcl::PointCloud<pcl::PointXYZL> new_cloud_world;
+      pcl::transformPointCloud(new_cloud , new_cloud_world , depth_world_eigen_tf);
+
+
       if (debug_) {
-        debug_combined_cloud += new_cloud;
+        debug_combined_cloud += new_cloud_world;
       }
+
+
+
     }
     if (debug_) {
       sensor_msgs::msg::PointCloud2 debug_cloud_msg;
       pcl::toROSMsg(debug_combined_cloud, debug_cloud_msg);
+      // debug_cloud_msg.header = yolo_detection_list->header;
       debug_cloud_msg.header = yolo_detection_list->header;
+      debug_cloud_msg.header.frame_id = world_frame_;
       debug_cloud_pub_->publish(debug_cloud_msg);
     }
   }

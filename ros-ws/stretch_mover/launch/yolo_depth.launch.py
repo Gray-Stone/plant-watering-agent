@@ -22,7 +22,7 @@ def generate_launch_description():
         'yolo_result_topic': '/yolo_ros/detections',
         'result_image_topic': '/yolo_ros/result_image',
         "conf_thres": 0.25,  # default 0.25
-        "world_frame": "camera_link",
+        "world_frame": "base_link",
         "debug": True,
         "verbose" : True,
     }

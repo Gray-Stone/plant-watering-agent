@@ -27,7 +27,7 @@ from sensor_msgs.msg import Image
 from ultralytics import YOLO
 from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
 from ultralytics_ros.msg import YoloResult
-from stretch_mover.msg import YoloDetections
+from stretch_mover.msg import YoloDetection , YoloDetectionList
 from std_msgs.msg import Header
 
 
@@ -42,7 +42,7 @@ class TrackerNode(Node):
         self.declare_parameter("conf_thres", 0.25)
         self.declare_parameter("iou_thres", 0.45)
         self.declare_parameter("max_det", 300)
-        self.declare_parameter("classes", list(range(80)))
+        self.declare_parameter("classes", list(range(2)))
         self.declare_parameter("tracker", "bytetrack.yaml")
         self.declare_parameter("device", "cpu")
         self.declare_parameter("result_conf", True)
@@ -52,6 +52,9 @@ class TrackerNode(Node):
         self.declare_parameter("result_labels", True)
         self.declare_parameter("result_boxes", True)
 
+        self.declare_parameter("debug", False)
+        self.declare_parameter("verbose", False)
+        
         self.last_seq = 0
 
         path = get_package_share_directory("ultralytics_ros")
@@ -71,9 +74,21 @@ class TrackerNode(Node):
         result_image_topic = (
             self.get_parameter("result_image_topic").get_parameter_value().string_value
         )
-        self.create_subscription(Image, input_topic, self.image_callback, 1)
-        self.results_pub = self.create_publisher(YoloDetections, yolo_result_topic, 1)
+        self.debug = (
+            self.get_parameter("debug").get_parameter_value().bool_value
+        )
+        self.verbose = (
+            self.get_parameter("debug").get_parameter_value().bool_value
+        )
+        self.get_logger().warn(f"yolo_result_topic: {yolo_result_topic}")
+
+        self.results_pub = self.create_publisher(YoloDetectionList, yolo_result_topic, 1)
         self.result_image_pub = self.create_publisher(Image, result_image_topic, 1)
+
+        if self.debug: 
+            self.mask_debug_pub = self.create_publisher(Image,"/camera/color/combined_mask_debug" , 1)
+
+        self.create_subscription(Image, input_topic, self.image_callback, 1)
 
     def image_callback(self, msg:Image):
         cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
@@ -100,41 +115,71 @@ class TrackerNode(Node):
         )
 
         if results is not None:
-            yolo_result_image_msg = Image()
+            detection_msg = self.create_detections_array(results , msg.header , cv2.ROTATE_90_COUNTERCLOCKWISE)
+            if detection_msg is None:
+                if self.verbose: 
+                    self.get_logger().info(f"Detection got no mask, detected bbox number: {len(results[0].boxes)}" , throttle_duration_sec=3)
+                return
+            detection_msg.header =msg.header
+
+            yolo_result_image_msg = self.create_result_image(results , cv2.ROTATE_90_COUNTERCLOCKWISE)
             yolo_result_image_msg.header = msg.header
 
-            detection_msgs = self.create_detections_array(results , msg.header , cv2.ROTATE_90_CLOCKWISE)
-            if detection_msgs is None:
-                return
-            detection_msgs.header =msg.header
-
-            yolo_result_image_msg = self.create_result_image(results)
-            self.results_pub.publish(detection_msgs)
+            self.results_pub.publish(detection_msg)
             self.result_image_pub.publish(yolo_result_image_msg)
 
-    def create_detections_array(self, results , mask_header: Header, rotate =None) -> Optional[YoloDetections]:
+    def create_detections_array(self, results , mask_header: Header, rotate =None) -> Optional[YoloDetectionList]:
+        """Put yolo result into YoloDetectionList message type
+
+        Args:
+            results (yolo.result): result object returned by yolo tracking
+            mask_header (std_msgs.msg.header): header of source image, will be applied to mask as well
+            rotate (cv.rotateCode, optional): CV rotation option, to rotate the mask back. Defaults to None.
+
+        Returns:
+            Optional[YoloDetectionList]: YoloDetectionList object from result, None if no mask or classes are detected.
+        """
         classes = results[0].boxes.cls
         confidence_score = results[0].boxes.conf
 
-        detections = YoloDetections()
+        detection_list = YoloDetectionList()
+        total_mask_list = []
         if results[0].masks is None:
-            # self.get_logger().warn(f"Detection got no mask, detected classes: {classes} ")
             return None
         for cls, conf, mask_tensor in zip(classes, confidence_score, results[0].masks):
+            det = YoloDetection()
             mask_numpy = (np.squeeze(mask_tensor.data.to("cpu").detach().numpy()).astype(np.uint8) *
                           255)
             if rotate is not None:
-                mask_numpy = cv2.rotate(mask_numpy,cv2.ROTATE_90_CLOCKWISE)
-
+                mask_numpy = cv2.rotate(mask_numpy,rotateCode=rotate)
+            if self.debug:
+                total_mask_list.append(mask_numpy)
             mask_image_msg = self.bridge.cv2_to_imgmsg(mask_numpy, encoding="mono8")
             mask_image_msg.header = mask_header
-            detections.class_ids.append(int(cls))
-            detections.score.append(float(conf))
-            detections.masks.append(mask_image_msg)
-        self.get_logger().info(f"detected {len(detections.class_ids)} classes")
-        return detections
+            det.class_id = int(cls)
+            det.score = float(conf)
+            det.mask = mask_image_msg
+            det.header = mask_header
+            detection_list.detections.append(det)
+        detection_list.header = mask_header
 
-    def create_result_image(self, results):
+        if self.verbose:
+            self.get_logger().info(f"detected {len(detection_list.detections)} classes", throttle_duration_sec=3)
+        if self.debug: 
+            # Create a combined mask for debugging.
+            combined_mask = np.zeros(total_mask_list[0].shape[:2] , dtype = np.uint8)
+            
+            for msk in total_mask_list:
+                combined_mask =np.bitwise_or(combined_mask ,msk)
+
+            combined_mask_msg = self.bridge.cv2_to_imgmsg(combined_mask , encoding = "mono8")
+            combined_mask_msg.header = mask_header
+            self.mask_debug_pub.publish(combined_mask_msg)
+
+
+        return detection_list 
+
+    def create_result_image(self, results,rotate =None):
         result_conf = self.get_parameter("result_conf").get_parameter_value().bool_value
         result_line_width = (
             self.get_parameter("result_line_width").get_parameter_value().integer_value
@@ -158,7 +203,9 @@ class TrackerNode(Node):
             font=result_font,
             labels=result_labels,
             boxes=result_boxes,
-        )
+        )                
+        plotted_image = cv2.rotate(plotted_image,rotateCode=rotate)
+
         result_image_msg = self.bridge.cv2_to_imgmsg(plotted_image, encoding="bgr8")
         return result_image_msg
 

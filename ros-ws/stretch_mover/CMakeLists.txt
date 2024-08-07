@@ -8,10 +8,6 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
-# uncomment the following section in order to fill in
-# further dependencies manually.
-# find_package(<dependency> REQUIRED)
-
 find_package(rclcpp REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(tf2 REQUIRED)
@@ -38,12 +34,11 @@ find_package(PCL REQUIRED)
 
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/YoloDetections.msg"
+  "msg/YoloDetection.msg"
+  "msg/YoloDetectionList.msg"
   DEPENDENCIES
-  sensor_msgs
   std_msgs
-  LIBRARY_NAME
-  ${PROJECT_NAME} # This is a necessary line. And it MUST be PROJECT_NAME !!
+  sensor_msgs
 )
 
 
@@ -92,9 +87,9 @@ install(PROGRAMS
 install(DIRECTORY
   launch
   config
-  models
-  
-  DESTINATION share/${PROJECT_NAME}/)
+  models  
+  DESTINATION share/${PROJECT_NAME}/
+)
 
 
 

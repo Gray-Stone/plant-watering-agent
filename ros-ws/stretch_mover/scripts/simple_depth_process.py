@@ -36,17 +36,47 @@ from visualization_msgs.msg import MarkerArray, Marker
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
-import tf2_py
-from geometry_msgs.msg import TransformStamped , Point
+from tf2_geometry_msgs.tf2_geometry_msgs import do_transform_point
+
+from geometry_msgs.msg import TransformStamped , Point , PointStamped
 from image_geometry import PinholeCameraModel
+import dataclasses
+import copy
 
 
+CLASS_COLORS = [(0.1,0.1,0.9),
+                (0.1,0.9,0.1)]
+
+
+def ClassToColor(class_id , a= 1.0):
+    color = CLASS_COLORS[class_id]
+
+    return ColorRGBA(r=color[0], g=color[1], b=color[2], a=a)
+
+@dataclasses.dataclass
+class ObjectRecord():
+    world_loc: Point
+    class_id: int
+
+    def TryMerge(self,new_point: Point , threshold: float):
+        # The order matter for later on adding half of delta
+        dx = new_point.x - self.world_loc.x
+        dy = new_point.y - self.world_loc.y
+        dz = new_point.z - self.world_loc.z
+        distance = np.sqrt(dx**2 + dy**2 + dz**2)
+        if distance < threshold:
+            # Not just averaging between new and old. It's like a rolling average. 
+            # the btm number is the size of rolling window.
+            self.world_loc.x += dx / 5
+            self.world_loc.y += dy / 5
+            self.world_loc.z += dz / 5
+            return True
+        return False
 
 class DepthProcessor(Node):
 
     LIVE_DETECTION_MARKER_ID = 10
-    CLASS_COLORS = [(0.1,0.1,0.9),
-                    (0.1,0.9,0.1)]
+    RECORDED_OBJECT_MARKER_ID = 100
     def __init__(self):
         super().__init__("basic_depth_process")
 
@@ -56,6 +86,7 @@ class DepthProcessor(Node):
         self.declare_parameter("yolo_result_topic", "yolo_ros/detections")
         self.declare_parameter("min_depth_range", 0.3)
         self.declare_parameter("max_depth_range", 3.0)
+        self.declare_parameter("same_object_dis_threshold", 0.3)
 
         self.declare_parameter("world_frame", "base_link")
 
@@ -73,6 +104,7 @@ class DepthProcessor(Node):
         yolo_result_topic = (self.get_parameter("yolo_result_topic").get_parameter_value().string_value)
         self.min_depth_range = ( self.get_parameter("min_depth_range").get_parameter_value().double_value)
         self.max_depth_range = ( self.get_parameter("max_depth_range").get_parameter_value().double_value)
+        self.same_object_dis_threshold = ( self.get_parameter("same_object_dis_threshold").get_parameter_value().double_value)
 
         self.world_frame = (self.get_parameter("world_frame").get_parameter_value().string_value)
 
@@ -85,6 +117,9 @@ class DepthProcessor(Node):
         self.bridge = cv_bridge.CvBridge()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+
+
+        self.known_object_list : list[ObjectRecord] = []
 
         self.marker_array_pub = self.create_publisher(MarkerArray, "yolo_depth_markers", 2)
 
@@ -114,13 +149,12 @@ class DepthProcessor(Node):
                 f'Could not transform {target_frame} to {source_frame}: {ex}')
             return None
 
-    def AddPointToMarker(self  , sphere_list_marker:Marker , space_xyz ,color ):
-        # TODO maybe check the point?
-        sphere_list_marker.points.append(Point(x=space_xyz[0], y=space_xyz[1], z=space_xyz[2]))
-        sphere_list_marker.colors.append(ColorRGBA(r=color[0], g=color[1], b=color[2], a=1.0))
-
-
     def depth_process_cb(self,camera_info_msg:CameraInfo , depth_msg: Image ,yolo_dec_list: YoloDetectionList):
+
+        # if self.debug:
+        #     self.get_logger().error(f"Header camera info {camera_info_msg.header}")
+        #     self.get_logger().error(f"Header depth_msg {depth_msg.header}")
+        #     self.get_logger().error(f"Header yolo_dec {yolo_dec_list.header}")
 
         depth_world_tf =self.GetTF(self.world_frame , depth_msg.header.frame_id , depth_msg.header.stamp)
         if depth_world_tf is None:
@@ -137,29 +171,29 @@ class DepthProcessor(Node):
         live_sphere_list_marker = Marker()
         live_sphere_list_marker.type = Marker.SPHERE_LIST
 
-
         if self.debug:
             fixed_masks = []
             centroid_xys = []
         if self.verbose:
             space_xyzs = []
+
         dec : YoloDetection
         for dec in yolo_dec_list.detections:
             mask_img = self.bridge.imgmsg_to_cv2(dec.mask , desired_encoding="mono8")
 
             # Do some basic process to help with image quality.
-            kernel = np.ones((3, 3), np.uint8)
-            opened_mask = cv2.morphologyEx(mask_img, cv2.MORPH_OPEN, kernel)
-            closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel)
-            dilated_mask = cv2.dilate(closed_mask,kernel,iterations = 1)
+            # kernel = np.ones((3, 3), np.uint8)
+            # opened_mask = cv2.morphologyEx(mask_img, cv2.MORPH_OPEN, kernel)
+            # closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel)
+            # dilated_mask = cv2.dilate(closed_mask,kernel,iterations = 1)
 
-            m = cv2.moments(dilated_mask , binaryImage=True)
+            m = cv2.moments(mask_img , binaryImage=True)
 
             px = int(m['m10'] / m['m00'])
             py = int(m['m01'] / m['m00'])
 
             if self.debug:
-                fixed_masks.append(dilated_mask)
+                fixed_masks.append(mask_img)
                 centroid_xys.append((px,py))
 
             depth_at_centroid = depth_image[py,px] / 1000.0
@@ -169,35 +203,64 @@ class DepthProcessor(Node):
                     self.get_logger().info(f"Drop centroid at uv {(px,py)} with depth {depth_at_centroid}")
                 continue
 
-            unit_xyz = camera_model.projectPixelTo3dRay((px,py))
+            unit_xyz = camera_model.projectPixelTo3dRay((float(px),float(py)))
             space_xyz = [ v * depth_at_centroid for v in unit_xyz ]
             # This is the spot in the space.
+            space_point = Point(x=space_xyz[0], y=space_xyz[1], z=space_xyz[2])
 
-            self.AddPointToMarker(live_sphere_list_marker,space_xyz, self.CLASS_COLORS[dec.class_id])
-            
+            world_point = do_transform_point(PointStamped(point = space_point) , depth_world_tf)
+            live_sphere_list_marker.points.append(world_point.point)
+            live_sphere_list_marker.colors.append(ClassToColor(dec.class_id))
+
             if self.verbose:
+                self.get_logger().info(f"world_point {world_point}")
                 space_xyzs.append(space_xyz)
 
+            for record in  self.known_object_list:
+                # try match and add
+                if record.class_id != dec.class_id:
+                    continue
+                if record.TryMerge(world_point.point,self.same_object_dis_threshold):
 
-            # Now we publish the point as visual message.
+                    break
+            else:
+                self.known_object_list.append(ObjectRecord(world_point.point , dec.class_id))
 
+        # Now we publish the point as visual message.
         live_sphere_list_marker.id = self.LIVE_DETECTION_MARKER_ID
         live_sphere_list_marker.header = depth_msg.header
+        live_sphere_list_marker.header.frame_id = self.world_frame
+        # live_sphere_list_marker.header.frame_id = "camera_infra1_optical_frame"
         live_sphere_list_marker.scale.x = 0.03
         live_sphere_list_marker.scale.y = 0.03
-        live_sphere_list_marker.scale.z = 0.03   
+        live_sphere_list_marker.scale.z = 0.03
         live_sphere_list_marker.lifetime = Duration(sec=2)
+
+        known_obj_list = copy.deepcopy(live_sphere_list_marker)
+        known_obj_list.id = self.RECORDED_OBJECT_MARKER_ID
+        known_obj_list.type = Marker.CUBE_LIST
+        known_obj_list.lifetime = Duration(sec=0)
+        known_obj_list.scale.x = 0.02
+        known_obj_list.scale.y = 0.02
+        known_obj_list.scale.z = 0.02
+        for record in self.known_object_list:
+            known_obj_list.points.append(record.world_loc)
+            known_obj_list.colors.append(ClassToColor(record.class_id , a=0.9))
+
+
         marker_array_msg = MarkerArray()
         marker_array_msg.markers.append(live_sphere_list_marker)
+        marker_array_msg.markers.append(known_obj_list)
 
         self.marker_array_pub.publish(marker_array_msg)
 
-        if self.verbose : 
+        if self.verbose :
             self.get_logger().info(f"Total of {len(space_xyzs)} space points")
 
         if self.debug and (len(fixed_masks) !=0):
-            if self.verbose:     
+            if self.verbose:
                 self.get_logger().info(f"Total of {len(centroid_xys)} centroid points")
+                self.get_logger().info(f"Total of {len(self.known_object_list)} known objects")
             debug_mask = np.zeros(fixed_masks[0].shape , dtype = fixed_masks[0].dtype)
             for m in fixed_masks:
                 debug_mask = cv2.bitwise_or(debug_mask , m)

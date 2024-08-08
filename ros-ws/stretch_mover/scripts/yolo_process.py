@@ -78,7 +78,7 @@ class TrackerNode(Node):
             self.get_parameter("debug").get_parameter_value().bool_value
         )
         self.verbose = (
-            self.get_parameter("debug").get_parameter_value().bool_value
+            self.get_parameter("verbose").get_parameter_value().bool_value
         )
         self.get_logger().warn(f"yolo_result_topic: {yolo_result_topic}")
 

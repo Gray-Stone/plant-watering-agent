@@ -29,15 +29,9 @@ def generate_launch_description():
     }
 
 
-    yolo_process = Node(
+    simple_depth_process = Node(
         package="stretch_mover",
-        executable="yolo_process.py",
-        parameters=[yolo_process_params],
-        output='screen',
-    )
-    depth_process = Node(
-        package="stretch_mover",
-        executable="masked_depth_process",
+        executable="simple_depth_process.py",
         parameters=[yolo_process_params],
         output='screen',
     )
@@ -45,6 +39,5 @@ def generate_launch_description():
 
 
     return LaunchDescription([
-        # yolo_process,
-        depth_process,
+        simple_depth_process,
     ])

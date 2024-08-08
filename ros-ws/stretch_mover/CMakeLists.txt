@@ -82,6 +82,7 @@ install(TARGETS masked_depth_process DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS  
   scripts/QuickTrajTest.py
   scripts/yolo_process.py
+  scripts/simple_depth_process.py
   DESTINATION lib/${PROJECT_NAME} )
 
 install(DIRECTORY

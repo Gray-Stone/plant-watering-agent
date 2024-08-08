@@ -28,6 +28,7 @@ from ultralytics import YOLO
 from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
 from stretch_mover.msg import YoloDetection , YoloDetectionList
 from std_msgs.msg import Header , ColorRGBA
+from builtin_interfaces.msg import Duration
 from message_filters import ApproximateTimeSynchronizer
 import message_filters
 from visualization_msgs.msg import MarkerArray, Marker
@@ -79,6 +80,7 @@ class DepthProcessor(Node):
         self.verbose = (self.get_parameter("verbose").get_parameter_value().bool_value)
 
         self.get_logger().warn(f"yolo_result_topic: {yolo_result_topic}")
+        self.get_logger().warn(f"depth_topic: {aligned_depth_topic}")
 
         self.bridge = cv_bridge.CvBridge()
         self.tf_buffer = Buffer()
@@ -88,7 +90,7 @@ class DepthProcessor(Node):
 
         if self.debug:
             # self.mask_debug_pub = self.create_publisher(Image,"/camera/color/combined_mask_debug" , 1)
-            pass
+            cv2.namedWindow("basic_mask_debug" , cv2.WINDOW_NORMAL)
 
         # Make message filter and cb
 
@@ -97,7 +99,7 @@ class DepthProcessor(Node):
         yolo_detect_sub = message_filters.Subscriber( self,YoloDetectionList, yolo_result_topic ,qos_profile = 5)
 
         self.depth_sync = ApproximateTimeSynchronizer([camera_info_sub, depth_sub, yolo_detect_sub],
-                                                      queue_size=10)
+                                                      queue_size=10,slop=0.05)
         self.depth_sync.registerCallback(self.depth_process_cb)
 
     def GetTF(self,target_frame:str, source_frame:str , time) -> Optional[TransformStamped] :
@@ -112,7 +114,7 @@ class DepthProcessor(Node):
                 f'Could not transform {target_frame} to {source_frame}: {ex}')
             return None
 
-    def AddPointToMarker(sphere_list_marker:Marker , space_xyz ,color ):
+    def AddPointToMarker(self  , sphere_list_marker:Marker , space_xyz ,color ):
         # TODO maybe check the point?
         sphere_list_marker.points.append(Point(x=space_xyz[0], y=space_xyz[1], z=space_xyz[2]))
         sphere_list_marker.colors.append(ColorRGBA(r=color[0], g=color[1], b=color[2], a=1.0))
@@ -120,7 +122,7 @@ class DepthProcessor(Node):
 
     def depth_process_cb(self,camera_info_msg:CameraInfo , depth_msg: Image ,yolo_dec_list: YoloDetectionList):
 
-        depth_world_tf =self.GetTF(self.world_frame , depth_msg.header.frame_id)
+        depth_world_tf =self.GetTF(self.world_frame , depth_msg.header.frame_id , depth_msg.header.stamp)
         if depth_world_tf is None:
             return
         if len(yolo_dec_list.detections) ==0:
@@ -148,8 +150,8 @@ class DepthProcessor(Node):
             # Do some basic process to help with image quality.
             kernel = np.ones((3, 3), np.uint8)
             opened_mask = cv2.morphologyEx(mask_img, cv2.MORPH_OPEN, kernel)
-            # opened_mask = cv2.morphologyEx(closed_mask, cv2.MORPH_OPEN, kernel)
-            dilated_mask = cv2.dilate(opened_mask,kernel,iterations = 1)
+            closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel)
+            dilated_mask = cv2.dilate(closed_mask,kernel,iterations = 1)
 
             m = cv2.moments(dilated_mask , binaryImage=True)
 
@@ -163,6 +165,8 @@ class DepthProcessor(Node):
             depth_at_centroid = depth_image[py,px] / 1000.0
 
             if depth_at_centroid < self.min_depth_range or depth_at_centroid>self.max_depth_range:
+                if self.verbose:
+                    self.get_logger().info(f"Drop centroid at uv {(px,py)} with depth {depth_at_centroid}")
                 continue
 
             unit_xyz = camera_model.projectPixelTo3dRay((px,py))
@@ -179,21 +183,26 @@ class DepthProcessor(Node):
 
         live_sphere_list_marker.id = self.LIVE_DETECTION_MARKER_ID
         live_sphere_list_marker.header = depth_msg.header
-        live_sphere_list_marker.scale.x = 0.1
-        live_sphere_list_marker.scale.y = 0.1
-        live_sphere_list_marker.scale.z = 0.1
-        
+        live_sphere_list_marker.scale.x = 0.03
+        live_sphere_list_marker.scale.y = 0.03
+        live_sphere_list_marker.scale.z = 0.03   
+        live_sphere_list_marker.lifetime = Duration(sec=2)
         marker_array_msg = MarkerArray()
         marker_array_msg.markers.append(live_sphere_list_marker)
 
         self.marker_array_pub.publish(marker_array_msg)
-        if self.debug and (len(fixed_masks) !=0):
 
+        if self.verbose : 
+            self.get_logger().info(f"Total of {len(space_xyzs)} space points")
+
+        if self.debug and (len(fixed_masks) !=0):
+            if self.verbose:     
+                self.get_logger().info(f"Total of {len(centroid_xys)} centroid points")
             debug_mask = np.zeros(fixed_masks[0].shape , dtype = fixed_masks[0].dtype)
             for m in fixed_masks:
                 debug_mask = cv2.bitwise_or(debug_mask , m)
             for c in centroid_xys:
-                cv2.circle(debug_mask, c, 2, (40,0,180))
+                cv2.circle(debug_mask, c, 8, 120, thickness = -1)
             cv2.imshow("basic_mask_debug" , debug_mask)
             cv2.waitKey(1)
 

@@ -36,7 +36,10 @@ find_package(PCL REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/YoloDetection.msg"
   "msg/YoloDetectionList.msg"
+  "msg/KnownObject.msg"
+  "msg/KnownObjectList.msg"
   DEPENDENCIES
+  geometry_msgs
   std_msgs
   sensor_msgs
 )

@@ -1,48 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# ultralytics_ros
-# Copyright (C) 2023-2024  Alpaca-zip
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+import copy
+import dataclasses
+
 from typing import Optional
+
 import cv2
 import cv_bridge
+import message_filters
 import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from rclpy.node import Node
-from sensor_msgs.msg import Image , CameraInfo
-from ultralytics import YOLO
-from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
-from stretch_mover.msg import YoloDetection , YoloDetectionList
-from std_msgs.msg import Header , ColorRGBA
 from builtin_interfaces.msg import Duration
-from message_filters import ApproximateTimeSynchronizer
-import message_filters
-from visualization_msgs.msg import MarkerArray, Marker
+from builtin_interfaces.msg import  Time as RosTime
 
+from geometry_msgs.msg import Point, PointStamped, TransformStamped
+from image_geometry import PinholeCameraModel
+from message_filters import ApproximateTimeSynchronizer
+from rclpy.node import Node
+from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import ColorRGBA, Header
+
+from stretch_mover.msg import YoloDetection, YoloDetectionList , KnownObject , KnownObjectList
+from tf2_geometry_msgs.tf2_geometry_msgs import do_transform_point
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
-from tf2_geometry_msgs.tf2_geometry_msgs import do_transform_point
-
-from geometry_msgs.msg import TransformStamped , Point , PointStamped
-from image_geometry import PinholeCameraModel
-import dataclasses
-import copy
-
+from ultralytics import YOLO
+from vision_msgs.msg import (Detection2D, Detection2DArray,
+                             ObjectHypothesisWithPose)
+from visualization_msgs.msg import Marker, MarkerArray
 
 CLASS_COLORS = [(0.1,0.1,0.9),
                 (0.1,0.9,0.1)]
@@ -55,21 +43,22 @@ def ClassToColor(class_id , a= 1.0):
 
 @dataclasses.dataclass
 class ObjectRecord():
-    world_loc: Point
+    world_loc: PointStamped
     class_id: int
 
-    def TryMerge(self,new_point: Point , threshold: float):
+    def TryMerge(self,new_point: Point , threshold: float , stamp: RosTime  ):
         # The order matter for later on adding half of delta
-        dx = new_point.x - self.world_loc.x
-        dy = new_point.y - self.world_loc.y
-        dz = new_point.z - self.world_loc.z
+        dx = new_point.x - self.world_loc.point.x
+        dy = new_point.y - self.world_loc.point.y
+        dz = new_point.z - self.world_loc.point.z
         distance = np.sqrt(dx**2 + dy**2 + dz**2)
         if distance < threshold:
             # Not just averaging between new and old. It's like a rolling average. 
             # the btm number is the size of rolling window.
-            self.world_loc.x += dx / 5
-            self.world_loc.y += dy / 5
-            self.world_loc.z += dz / 5
+            self.world_loc.point.x += dx / 5
+            self.world_loc.point.y += dy / 5
+            self.world_loc.point.z += dz / 5
+            self.world_loc.header.stamp = stamp
             return True
         return False
 
@@ -123,6 +112,8 @@ class DepthProcessor(Node):
         self.known_object_list : list[ObjectRecord] = []
 
         self.marker_array_pub = self.create_publisher(MarkerArray, "yolo_depth_markers", 5)
+        self.known_objects_pub = self.create_publisher(KnownObjectList, "yolo_known_objects", 5)
+
 
         if self.debug:
             # self.mask_debug_pub = self.create_publisher(Image,"/camera/color/combined_mask_debug" , 1)
@@ -213,6 +204,8 @@ class DepthProcessor(Node):
             live_sphere_list_marker.points.append(world_point.point)
             live_sphere_list_marker.colors.append(ClassToColor(dec.class_id))
 
+
+
             if self.verbose:
                 self.get_logger().info(f"world_point {world_point}")
                 space_xyzs.append(space_xyz)
@@ -221,11 +214,13 @@ class DepthProcessor(Node):
                 # try match and add
                 if record.class_id != dec.class_id:
                     continue
-                if record.TryMerge(world_point.point,self.same_object_dis_threshold):
-
+                if record.TryMerge(world_point.point,self.same_object_dis_threshold , depth_msg.header.stamp):
                     break
             else:
-                self.known_object_list.append(ObjectRecord(world_point.point , dec.class_id))
+                # stamp from tf look up is same as depth message.
+                self.known_object_list.append(ObjectRecord( world_point, dec.class_id))
+            
+            # TODO publish the whole list, also indicate which one is live and seen in frame.
 
         # Now we publish the point as visual message.
         live_sphere_list_marker.id = self.LIVE_DETECTION_MARKER_ID
@@ -244,10 +239,19 @@ class DepthProcessor(Node):
         known_obj_list.scale.x = self.marker_size
         known_obj_list.scale.y = self.marker_size
         known_obj_list.scale.z = self.marker_size
-        for record in self.known_object_list:
-            known_obj_list.points.append(record.world_loc)
+        obj_list = KnownObjectList()
+        for idx , record in enumerate(self.known_object_list):
+            
+            # Actually recording and passing it to others.
+            obj = KnownObject(id = idx , object_class = record.class_id)
+            obj.space_loc = record.world_loc
+            obj_list.objects.append(obj)
+            
+            # This is for visulizing
+            known_obj_list.points.append(record.world_loc.point)
             known_obj_list.colors.append(ClassToColor(record.class_id , a=0.9))
 
+        self.known_objects_pub.publish(obj_list)
 
         marker_array_msg = MarkerArray()
         marker_array_msg.markers.append(live_sphere_list_marker)

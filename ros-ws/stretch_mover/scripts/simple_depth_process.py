@@ -87,11 +87,11 @@ class DepthProcessor(Node):
         self.declare_parameter("min_depth_range", 0.3)
         self.declare_parameter("max_depth_range", 3.0)
         self.declare_parameter("same_object_dis_threshold", 0.3)
+        self.declare_parameter("marker_size", 0.1)
 
         self.declare_parameter("world_frame", "base_link")
 
         self.declare_parameter("classes", list(range(2)))
-        self.declare_parameter("tracker", "bytetrack.yaml")
 
         self.declare_parameter("debug", False)
         self.declare_parameter("verbose", False)
@@ -105,6 +105,7 @@ class DepthProcessor(Node):
         self.min_depth_range = ( self.get_parameter("min_depth_range").get_parameter_value().double_value)
         self.max_depth_range = ( self.get_parameter("max_depth_range").get_parameter_value().double_value)
         self.same_object_dis_threshold = ( self.get_parameter("same_object_dis_threshold").get_parameter_value().double_value)
+        self.marker_size = ( self.get_parameter("marker_size").get_parameter_value().double_value)
 
         self.world_frame = (self.get_parameter("world_frame").get_parameter_value().string_value)
 
@@ -121,7 +122,7 @@ class DepthProcessor(Node):
 
         self.known_object_list : list[ObjectRecord] = []
 
-        self.marker_array_pub = self.create_publisher(MarkerArray, "yolo_depth_markers", 2)
+        self.marker_array_pub = self.create_publisher(MarkerArray, "yolo_depth_markers", 5)
 
         if self.debug:
             # self.mask_debug_pub = self.create_publisher(Image,"/camera/color/combined_mask_debug" , 1)
@@ -231,18 +232,18 @@ class DepthProcessor(Node):
         live_sphere_list_marker.header = depth_msg.header
         live_sphere_list_marker.header.frame_id = self.world_frame
         # live_sphere_list_marker.header.frame_id = "camera_infra1_optical_frame"
-        live_sphere_list_marker.scale.x = 0.03
-        live_sphere_list_marker.scale.y = 0.03
-        live_sphere_list_marker.scale.z = 0.03
+        live_sphere_list_marker.scale.x = self.marker_size + 0.02
+        live_sphere_list_marker.scale.y = self.marker_size + 0.02
+        live_sphere_list_marker.scale.z = self.marker_size + 0.02
         live_sphere_list_marker.lifetime = Duration(sec=2)
 
         known_obj_list = copy.deepcopy(live_sphere_list_marker)
         known_obj_list.id = self.RECORDED_OBJECT_MARKER_ID
         known_obj_list.type = Marker.CUBE_LIST
         known_obj_list.lifetime = Duration(sec=0)
-        known_obj_list.scale.x = 0.02
-        known_obj_list.scale.y = 0.02
-        known_obj_list.scale.z = 0.02
+        known_obj_list.scale.x = self.marker_size
+        known_obj_list.scale.y = self.marker_size
+        known_obj_list.scale.z = self.marker_size
         for record in self.known_object_list:
             known_obj_list.points.append(record.world_loc)
             known_obj_list.colors.append(ClassToColor(record.class_id , a=0.9))

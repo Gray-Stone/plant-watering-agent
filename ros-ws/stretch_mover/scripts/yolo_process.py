@@ -115,6 +115,11 @@ class TrackerNode(Node):
         )
 
         if results is not None:
+            # Publish this regardless?
+            yolo_result_image_msg = self.create_result_image(results , cv2.ROTATE_90_COUNTERCLOCKWISE)
+            yolo_result_image_msg.header = msg.header
+            self.result_image_pub.publish(yolo_result_image_msg)
+
             detection_msg = self.create_detections_array(results , msg.header , cv2.ROTATE_90_COUNTERCLOCKWISE)
             if detection_msg is None:
                 if self.verbose: 
@@ -122,12 +127,11 @@ class TrackerNode(Node):
                 return
             detection_msg.header =msg.header
 
-            yolo_result_image_msg = self.create_result_image(results , cv2.ROTATE_90_COUNTERCLOCKWISE)
-            yolo_result_image_msg.header = msg.header
 
             self.results_pub.publish(detection_msg)
-            self.result_image_pub.publish(yolo_result_image_msg)
-
+        else:
+            # This is for visually better seeing it in rviz
+            self.result_image_pub.publish(msg)
     def create_detections_array(self, results , mask_header: Header, rotate =None) -> Optional[YoloDetectionList]:
         """Put yolo result into YoloDetectionList message type
 

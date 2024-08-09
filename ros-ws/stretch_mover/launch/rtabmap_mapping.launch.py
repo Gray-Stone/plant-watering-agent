@@ -15,8 +15,12 @@ def generate_launch_description():
     stretch_navigation_path = get_package_share_directory('stretch_nav2')
 
     rviz_param = DeclareLaunchArgument('use_rviz', default_value='true', choices=['true', 'false'])
-    # rviz_config = DeclareLaunchArgument('rviz_config',
-    #                                     default_value=stretch_mover_share + '/' + 'config/rtabmap.rviz')
+    driver_mode_arg = DeclareLaunchArgument(
+        'stretch_mode',
+        default_value='position', choices=['position', 'navigation', 'trajectory', 'gamepad'],
+        description='The mode in which the ROS driver commands the robot'
+    )
+
     rviz_config = DeclareLaunchArgument('rviz_config',
                                         default_value=str(Path(stretch_mover_share) / 'config/rtabmap.rviz'))
 
@@ -25,7 +29,7 @@ def generate_launch_description():
 
     stretch_driver_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([stretch_core_path, '/launch/stretch_driver.launch.py']),
-        launch_arguments={'mode': 'navigation', 'broadcast_odom_tf': 'True'}.items())
+        launch_arguments={'mode': LaunchConfiguration('stretch_mode') , 'broadcast_odom_tf': 'True'}.items())
 
     d435i_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([stretch_core_path, '/launch/d435i_high_resolution.launch.py']))
@@ -84,6 +88,7 @@ def generate_launch_description():
     return LaunchDescription([
         rviz_param,
         rviz_config,
+        driver_mode_arg,
         teleop_type_param,
         stretch_driver_launch,
         d435i_launch,

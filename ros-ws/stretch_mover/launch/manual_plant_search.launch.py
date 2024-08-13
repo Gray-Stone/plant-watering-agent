@@ -22,5 +22,5 @@ def generate_launch_description():
 
     return LaunchDescription([
         rtabmap_launch,
-        # nav2_launch,
+        nav2_launch,
     ])

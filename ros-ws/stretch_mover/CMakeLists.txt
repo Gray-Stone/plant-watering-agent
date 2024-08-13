@@ -86,6 +86,7 @@ install(PROGRAMS
   scripts/QuickTrajTest.py
   scripts/yolo_process.py
   scripts/simple_depth_process.py
+  scripts/MoveToPlants.py
   DESTINATION lib/${PROJECT_NAME} )
 
 install(DIRECTORY

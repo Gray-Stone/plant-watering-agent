@@ -11,7 +11,6 @@ import cv_bridge
 import message_filters
 import numpy as np
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from builtin_interfaces.msg import Duration
 from builtin_interfaces.msg import  Time as RosTime
 
@@ -73,6 +72,10 @@ class DepthProcessor(Node):
         self.declare_parameter("aligned_depth_topic", "/camera/aligned_depth_to_color/image_raw")
 
         self.declare_parameter("yolo_result_topic", "yolo_ros/detections")
+
+        self.declare_parameter("known_object_topic", "yolo_ros/known_objects")
+
+
         self.declare_parameter("min_depth_range", 0.3)
         self.declare_parameter("max_depth_range", 3.0)
         self.declare_parameter("same_object_dis_threshold", 0.3)
@@ -91,6 +94,8 @@ class DepthProcessor(Node):
         camera_info_topic = (self.get_parameter("camera_info_topic").get_parameter_value().string_value)
         aligned_depth_topic = (self.get_parameter("aligned_depth_topic").get_parameter_value().string_value)
         yolo_result_topic = (self.get_parameter("yolo_result_topic").get_parameter_value().string_value)
+        known_object_topic = (self.get_parameter("known_object_topic").get_parameter_value().string_value)
+
         self.min_depth_range = ( self.get_parameter("min_depth_range").get_parameter_value().double_value)
         self.max_depth_range = ( self.get_parameter("max_depth_range").get_parameter_value().double_value)
         self.same_object_dis_threshold = ( self.get_parameter("same_object_dis_threshold").get_parameter_value().double_value)
@@ -112,7 +117,7 @@ class DepthProcessor(Node):
         self.known_object_list : list[ObjectRecord] = []
 
         self.marker_array_pub = self.create_publisher(MarkerArray, "yolo_depth_markers", 5)
-        self.known_objects_pub = self.create_publisher(KnownObjectList, "yolo_known_objects", 5)
+        self.known_objects_pub = self.create_publisher(KnownObjectList, known_object_topic, 5)
 
 
         if self.debug:

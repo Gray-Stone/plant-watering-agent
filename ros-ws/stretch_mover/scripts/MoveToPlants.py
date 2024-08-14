@@ -3,8 +3,11 @@
 
 import copy
 import dataclasses
-
+import enum
+import time
+from enum import Enum
 from typing import Optional
+from action_msgs.msg import GoalStatus
 
 import cv2
 import cv_bridge
@@ -13,16 +16,20 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from builtin_interfaces.msg import Duration
-from builtin_interfaces.msg import  Time as RosTime
-
-from geometry_msgs.msg import Point, PointStamped, TransformStamped , Vector3
+from builtin_interfaces.msg import Time as RosTime
+from geometry_msgs.msg import Point, PointStamped, TransformStamped, Vector3
 from image_geometry import PinholeCameraModel
 from message_filters import ApproximateTimeSynchronizer
+from nav2_msgs.action import ComputePathToPose, FollowPath, NavigateToPose
+from nav_msgs.msg import MapMetaData, OccupancyGrid
+from rclpy.action import ActionClient 
+from rclpy.action.client import ClientGoalHandle
 from rclpy.node import Node
 # from sensor_msgs.msg import CameraInfo, Image as ImageMsg
-from std_msgs.msg import (String as StringMsg , ColorRGBA, Header)
-
-from stretch_mover.msg import YoloDetection, YoloDetectionList , KnownObject , KnownObjectList
+from std_msgs.msg import ColorRGBA, Header
+from std_msgs.msg import String as StringMsg
+from stretch_mover.msg import (KnownObject, KnownObjectList, YoloDetection,
+                               YoloDetectionList)
 from tf2_geometry_msgs.tf2_geometry_msgs import do_transform_point
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
@@ -31,10 +38,6 @@ from ultralytics import YOLO
 from vision_msgs.msg import (Detection2D, Detection2DArray,
                              ObjectHypothesisWithPose)
 from visualization_msgs.msg import Marker, MarkerArray
-from rclpy.action import ActionClient
-
-from nav2_msgs.action import ComputePathToPose, FollowPath , NavigateToPose
-from nav_msgs.msg import OccupancyGrid , MapMetaData
 
 COLOR_MSG_LIST_RGBW = [
     ColorRGBA(r=1.0,b=0.0,g=0.0,a=1.0),
@@ -43,7 +46,7 @@ COLOR_MSG_LIST_RGBW = [
     ColorRGBA(r=1.0,b=1.0,g=1.0,a=1.0),
 ]
 
- 
+
 class OccupancyGridHelper():
     def __init__(self , map_msg: OccupancyGrid ):
         self.map = map_msg
@@ -63,7 +66,7 @@ class OccupancyGridHelper():
         index_y = int(y_off / self.map_info.resolution)
 
         return index_x , index_y
-    
+
 
     def map_loc_to_world(self,map_loc : tuple[int,int])->tuple[float,float]:
         mx , my = map_loc
@@ -87,7 +90,7 @@ class OccupancyGridHelper():
         return True
 
     def Get4Neighbor(self, map_loc: tuple[int, int]) -> list[tuple[int, int]]:
-        # TODO change this by add each after boundary check 
+        # TODO change this by add each after boundary check
         x, y = map_loc
         valid_nbr = []
         for loc in [
@@ -117,7 +120,7 @@ class OccupancyGridHelper():
             data = self.get_data(loc)
             m.points.append(self.map_loc_to_world_point(loc))
 
-            if data == -1: 
+            if data == -1:
                 m.colors.append(COLOR_MSG_LIST_RGBW[2])
             elif data ==0 :
                 m.colors.append(COLOR_MSG_LIST_RGBW[3])
@@ -129,7 +132,7 @@ class OccupancyGridHelper():
                 m.colors.append(c)
         return m
 
-  
+
 def map_marker_check(map_helper: OccupancyGridHelper)->Marker:
     # Map data: -1 unknown, 0 free, 100 occupied.
     locs = []
@@ -139,25 +142,33 @@ def map_marker_check(map_helper: OccupancyGridHelper)->Marker:
             if not map_helper.ValidLoc(loc):
                 raise ValueError(f"ixy {loc} is out of bound! ")
             locs.append(loc)
-    
+
     return map_helper.color_sphere_gen(locs , scale = 0.03)
 
 
 def MakeSphereMaker(id , pos: Point , header , color : ColorRGBA = ColorRGBA(r=1.0,a=1.0)) -> Marker:
-        m = Marker()
-        m.header = header
-        m.type = Marker.SPHERE
-        m.id = id
-        m.pose.position = pos
-        m.color = color
-        m.scale.x = 0.1
-        m.scale.y = 0.1
-        m.scale.z = 0.1
-        return m
+    m = Marker()
+    m.header = header
+    m.type = Marker.SPHERE
+    m.id = id
+    m.pose.position = pos
+    m.color = color
+    m.scale.x = 0.1
+    m.scale.y = 0.1
+    m.scale.z = 0.1
+    return m
 
 class GoalMover(Node):
 
-    def pub_marker(self , m:Marker) : 
+
+    class CmdStates(Enum):
+        IDLE = enum.auto()
+        PLANNING = enum.auto()
+        MOVING = enum.auto()
+        PAUSE = enum.auto()
+
+
+    def pub_marker(self , m:Marker) :
         self.marker_pub.publish(m)
 
 
@@ -167,9 +178,23 @@ class GoalMover(Node):
         #### Parameters
         self.declare_parameter("known_object_topic" , "yolo_known_objects")
         self.declare_parameter("pot_class_id" , int(1))
+        self.declare_parameter("known_object_topic", "yolo_ros/known_objects")
 
         self.known_obj_topic = self.get_parameter("known_object_topic").get_parameter_value().string_value
         self.pot_class_id = self.get_parameter("pot_class_id").get_parameter_value().integer_value
+        known_object_topic = (self.get_parameter("known_object_topic").get_parameter_value().string_value)
+
+
+        #### Member Vars
+        self.map_helper :OccupancyGridHelper = None
+        self.known_obj_list: KnownObjectList = None
+        self.next_planning_object_idx = 0
+        self.current_chasing_obj : KnownObject = None 
+
+        self.state = self.CmdStates.IDLE
+
+        # Time keeper for the pause state.
+        self.pause_start_time = time.time()
 
         #### Publisher
         self.state_change_publisher = self.create_publisher(StringMsg , "move_plant_state_change" , 2)
@@ -181,22 +206,99 @@ class GoalMover(Node):
         # Subscribers
         self.map_subs = self.create_subscription(OccupancyGrid, "/map" , self.global_map_cb , 1)
         # self.map_subs = self.create_subscription(OccupancyGrid, "/local_costmap/costmap" , self.global_map_cb , 1)
+        self.known_obj_subs  = self.create_subscription(  KnownObjectList , known_object_topic , self.known_obj_cb , 1)
 
+        ## main timer
+        self.create_timer(0.1,self.main_timer)
 
     def global_map_cb(self,map_msg : OccupancyGrid):
-        print(f"\n\n ================== ")
-        print(f"Got map , header {map_msg.header} , info {map_msg.info}")
+        # print(f"\n\n ================== ")
+        # print(f"Got map , header {map_msg.header} , info {map_msg.info}")
+
         self.map_helper = OccupancyGridHelper(map_msg)
-
-        self.oc_map = map_msg
-
         # Map data: -1 unknown, 0 free, 100 occupied.
+        # For debug purpose.
+        # self.pub_marker(map_marker_check(self.map_helper))
+    def known_obj_cb(self, msg: KnownObjectList):
+        self.known_obj_list = msg
 
-        self.pub_marker(map_marker_check(self.map_helper))
+    def state_update(self , new_state:'CmdStates'):
+        if new_state == self.state:
+            return
+
+        self.get_logger().warn(f"State changing from {self.state} to {new_state}")
+        self.state = new_state
+        return
+
+    async def main_timer(self):
+        # This is the main logic.
+        if self.state == self.CmdStates.IDLE:
+            # Do nothing in idle state.
+            return
+
+        if self.state == self.CmdStates.PAUSE:
+            if time.time() - self.pause_start_time > self.PAUSE_DURATION:
+                # self.get_logger().info("Pause timed up")
+                self.state_update(self.CmdStates.PLANNING)
+            return
+
+        if self.state == self.CmdStates.PLANNING:
+            self.state_update(self.planning_state())
 
 
+    async def planning_state(self) -> CmdStates:
+        # effectively skip to next cycle if these are none
+        if self.map_helper is None:
+            return self.CmdStates.PLANNING
+        if self.known_obj_list is None:
+            return self.CmdStates.PLANNING
 
+        if self.next_planning_object_idx >= len(self.known_obj_list):
+            self.get_logger().warn(f"{len(self.known_obj_list)} locations all visited!")
+            return self.CmdStates.IDLE
 
+        obj :KnownObject = self.known_obj_list[self.next_planning_object_idx]
+
+        # TODO check id is 0
+
+        self.current_chasing_obj = obj
+        loc = obj.space_loc
+        if loc.header.frame_id != self.map_helper.map.header.frame_id:
+            # TODO we just don't handle this at all
+            self.get_logger().error(
+                f"Target Loc frame {loc.header.frame_id} not in same frame as map {self.map_helper.map.header.frame_id}! "
+            )
+            raise ValueError(
+                f"Target Loc frame {loc.header.frame_id} not in same frame as map {self.map_helper.map.header.frame_id}! "
+            )
+
+        # TODO search for a "free" spot on the map next to the goal
+
+        pose_goal = ComputePathToPose.Goal()
+
+        pose_goal.goal.header = loc.header
+        pose_goal.goal.pose.position.x = loc.point.x
+        pose_goal.goal.pose.position.y = loc.point.y
+        pose_goal.goal.pose.position.z = loc.point.z
+        # TODO add orientation
+        pose_goal.use_start = False
+
+        goal_handle :ClientGoalHandle = await self.compute_path_client.send_goal_async(pose_goal)
+        self.get_logger().warn(f"type of goal_handle is {type(goal_handle)}, itself is \n{goal_handle}")
+        if not goal_handle.accepted:
+            raise ValueError("Not accepting goal!")
+        res :ComputePathToPose.Result = await goal_handle.get_result_async()
+        self.get_logger().warn(f"type of res is {type(res)}, itself is \n{res}")
+        if res.status != GoalStatus.STATUS_SUCCEEDED:
+            raise RuntimeError(f"Did not get successful goal result, got {res.status}" )
+        result : ComputePathToPose.Result = res.result
+        self.get_logger().info(f"Planning result {result}")
+
+        # TODO record something for MOVING state to do.
+
+        # After planning move to executing
+        self.next_planning_object_idx +=1 # increment planning counter
+        return self.CmdStates.MOVING
 
 
 

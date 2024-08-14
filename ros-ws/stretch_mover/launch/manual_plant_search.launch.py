@@ -14,13 +14,17 @@ def generate_launch_description():
 
     rtabmap_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([stretch_mover_share, "/launch/rtabmap_mapping.launch.py"]),
-        launch_arguments={"stretch_mode": "gamepad"}.items(),
+        # launch_arguments={"stretch_mode": "gamepad"}.items(),
+        launch_arguments={"stretch_mode": "position"}.items(),
     )
 
     nav2_launch = IncludeLaunchDescription(PythonLaunchDescriptionSource(
         [stretch_mover_share, "/launch/nav2.launch.py"]))
+    yolo_nodes_launch = IncludeLaunchDescription(PythonLaunchDescriptionSource(
+        [stretch_mover_share, "/launch/yolo_subsystem.py"]))
 
     return LaunchDescription([
         rtabmap_launch,
-        nav2_launch,
+        # nav2_launch,
+        yolo_nodes_launch,
     ])

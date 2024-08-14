@@ -134,6 +134,9 @@ class DepthProcessor(Node):
                                                       queue_size=10,slop=0.05)
         self.depth_sync.registerCallback(self.depth_process_cb)
 
+        # Keep re-publishing known objects
+        self.create_timer(0.1,self.known_object_republish_timer)
+
     def GetTF(self,target_frame:str, source_frame:str , time) -> Optional[TransformStamped] :
         try:
             t = self.tf_buffer.lookup_transform(
@@ -145,6 +148,30 @@ class DepthProcessor(Node):
             self.get_logger().warn(
                 f'Could not transform {target_frame} to {source_frame}: {ex}')
             return None
+
+    def make_known_object_list_msg(self ,visual_marker : Marker):
+
+        visual_marker.header.frame_id = self.world_frame
+        visual_marker.id = self.RECORDED_OBJECT_MARKER_ID
+        visual_marker.type = Marker.CUBE_LIST
+        visual_marker.lifetime = Duration(sec=0)
+        visual_marker.scale.x = self.marker_size
+        visual_marker.scale.y = self.marker_size
+        visual_marker.scale.z = self.marker_size
+
+
+        obj_list = KnownObjectList()
+        for idx , record in enumerate(self.known_object_list):
+            
+            # Actually recording and passing it to others.
+            obj = KnownObject(id = idx , object_class = record.class_id)
+            obj.space_loc = record.world_loc
+            obj_list.objects.append(obj)
+            
+            # This is for visulizing
+            visual_marker.points.append(record.world_loc.point)
+            visual_marker.colors.append(ClassToColor(record.class_id , a=0.9))
+        return obj_list , visual_marker
 
     def depth_process_cb(self,camera_info_msg:CameraInfo , depth_msg: Image ,yolo_dec_list: YoloDetectionList):
 
@@ -237,30 +264,16 @@ class DepthProcessor(Node):
         live_sphere_list_marker.scale.z = self.marker_size + 0.02
         live_sphere_list_marker.lifetime = Duration(sec=2)
 
-        known_obj_list = copy.deepcopy(live_sphere_list_marker)
-        known_obj_list.id = self.RECORDED_OBJECT_MARKER_ID
-        known_obj_list.type = Marker.CUBE_LIST
-        known_obj_list.lifetime = Duration(sec=0)
-        known_obj_list.scale.x = self.marker_size
-        known_obj_list.scale.y = self.marker_size
-        known_obj_list.scale.z = self.marker_size
-        obj_list = KnownObjectList()
-        for idx , record in enumerate(self.known_object_list):
-            
-            # Actually recording and passing it to others.
-            obj = KnownObject(id = idx , object_class = record.class_id)
-            obj.space_loc = record.world_loc
-            obj_list.objects.append(obj)
-            
-            # This is for visulizing
-            known_obj_list.points.append(record.world_loc.point)
-            known_obj_list.colors.append(ClassToColor(record.class_id , a=0.9))
+        known_obj_marker = copy.deepcopy(live_sphere_list_marker)
 
+
+        obj_list , known_obj_marker = self.make_known_object_list_msg(known_obj_marker)
+        obj_list.header = known_obj_marker.header
         self.known_objects_pub.publish(obj_list)
 
         marker_array_msg = MarkerArray()
         marker_array_msg.markers.append(live_sphere_list_marker)
-        marker_array_msg.markers.append(known_obj_list)
+        marker_array_msg.markers.append(known_obj_marker)
 
         self.marker_array_pub.publish(marker_array_msg)
 
@@ -278,6 +291,24 @@ class DepthProcessor(Node):
                 cv2.circle(debug_mask, c, 8, 120, thickness = -1)
             cv2.imshow("basic_mask_debug" , debug_mask)
             cv2.waitKey(1)
+
+    def known_object_republish_timer(self):
+
+        if len (self.known_object_list) ==0 :
+            # Don't publish anything before we see something
+            return
+
+        visual_marker = Marker()
+        visual_marker.header.stamp = self.get_clock().now().to_msg()
+        obj_list , visual_marker = self.make_known_object_list_msg(visual_marker)
+
+        obj_list.header = visual_marker.header
+        self.known_objects_pub.publish(obj_list)
+
+        array = MarkerArray()
+        array.markers.append(visual_marker)
+        self.marker_array_pub.publish(array)
+
 
 
 def main(args=None):

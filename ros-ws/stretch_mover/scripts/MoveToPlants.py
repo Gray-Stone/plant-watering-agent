@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+#! /usr/bin/env python3
 
 import copy
 import dataclasses
@@ -9,20 +8,15 @@ from enum import Enum
 from typing import Optional
 from action_msgs.msg import GoalStatus
 
-import cv2
-import cv_bridge
-import message_filters
 import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from builtin_interfaces.msg import Duration
 from builtin_interfaces.msg import Time as RosTime
 from geometry_msgs.msg import Point, PointStamped, TransformStamped, Vector3
-from image_geometry import PinholeCameraModel
-from message_filters import ApproximateTimeSynchronizer
 from nav2_msgs.action import ComputePathToPose, FollowPath, NavigateToPose
 from nav_msgs.msg import MapMetaData, OccupancyGrid
-from rclpy.action import ActionClient 
+from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
 from rclpy.node import Node
 # from sensor_msgs.msg import CameraInfo, Image as ImageMsg
@@ -34,10 +28,10 @@ from tf2_geometry_msgs.tf2_geometry_msgs import do_transform_point
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
-from ultralytics import YOLO
-from vision_msgs.msg import (Detection2D, Detection2DArray,
-                             ObjectHypothesisWithPose)
 from visualization_msgs.msg import Marker, MarkerArray
+
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+
 
 COLOR_MSG_LIST_RGBW = [
     ColorRGBA(r=1.0,b=0.0,g=0.0,a=1.0),
@@ -158,6 +152,24 @@ def MakeSphereMaker(id , pos: Point , header , color : ColorRGBA = ColorRGBA(r=1
     m.scale.z = 0.1
     return m
 
+
+def MakeCylinderMarker(id,
+                       pos: Point,
+                       header,
+                       color=COLOR_MSG_LIST_RGBW[1],
+                       diameter=0.02,
+                       height=1.8) -> Marker:
+    m = Marker()
+    m.header = header
+    m.type = Marker.CYLINDER
+    m.id = id
+    m.pose.position = pos
+    m.color = color
+    m.scale.x = diameter
+    m.scale.y = diameter
+    m.scale.z = height
+    return m
+
 class GoalMover(Node):
 
 
@@ -168,28 +180,28 @@ class GoalMover(Node):
         PAUSE = enum.auto()
 
 
-    def pub_marker(self , m:Marker) :
+    def pub_marker(self , m:Marker):
         self.marker_pub.publish(m)
-
 
     def __init__(self):
         super().__init__("move_to_plants")
 
         #### Parameters
-        self.declare_parameter("known_object_topic" , "yolo_known_objects")
         self.declare_parameter("pot_class_id" , int(1))
+        # world frame will also be the map's frame.
+        self.declare_parameter("world_frame" , 'map')
         self.declare_parameter("known_object_topic", "yolo_ros/known_objects")
 
-        self.known_obj_topic = self.get_parameter("known_object_topic").get_parameter_value().string_value
         self.pot_class_id = self.get_parameter("pot_class_id").get_parameter_value().integer_value
-        known_object_topic = (self.get_parameter("known_object_topic").get_parameter_value().string_value)
+        self.world_frame = self.get_parameter("world_frame").get_parameter_value().string_value
+        known_object_topic = self.get_parameter("known_object_topic").get_parameter_value().string_value
 
 
         #### Member Vars
         self.map_helper :OccupancyGridHelper = None
         self.known_obj_list: KnownObjectList = None
         self.next_planning_object_idx = 0
-        self.current_chasing_obj : KnownObject = None 
+        self.current_chasing_obj : KnownObject = None
 
         self.state = self.CmdStates.IDLE
 
@@ -201,7 +213,16 @@ class GoalMover(Node):
         self.marker_pub = self.create_publisher(Marker, "VisualizationMarker" , 1)
 
         #### Action client
-        self.compute_path_client = ActionClient(self,ComputePathToPose , "compute_path_through_poses")
+        action_cb_group = MutuallyExclusiveCallbackGroup()
+
+        self.compute_path_client = ActionClient(self,
+                                                ComputePathToPose,
+                                                "compute_path_to_pose",
+                                                callback_group=action_cb_group)
+        self.navigate_to_pose_client = ActionClient(self,
+                                                    ComputePathToPose,
+                                                    "/navigate_to_pose",
+                                                    callback_group=action_cb_group)
 
         # Subscribers
         self.map_subs = self.create_subscription(OccupancyGrid, "/map" , self.global_map_cb , 1)
@@ -210,6 +231,10 @@ class GoalMover(Node):
 
         ## main timer
         self.create_timer(0.1,self.main_timer)
+        self.get_logger().info("Node configured, timer created!")
+
+        self.state_update(self.CmdStates.PLANNING)
+
 
     def global_map_cb(self,map_msg : OccupancyGrid):
         # print(f"\n\n ================== ")
@@ -243,21 +268,37 @@ class GoalMover(Node):
             return
 
         if self.state == self.CmdStates.PLANNING:
-            self.state_update(self.planning_state())
+            self.state_update(await self.planning_state())
 
+    def make_ComputePathToPose_goal(self , x,y):
+        pose_goal = ComputePathToPose.Goal()
+        pose_goal.goal.header.frame_id = self.world_frame
+        pose_goal.goal.header.stamp = self.get_clock().now().to_msg()
+
+        # we should be able to leave stamp empty.
+        pose_goal.goal.pose.position.x = x
+        pose_goal.goal.pose.position.y = y
+        # Must fill in the planner id, or it won't print the action failed reason.
+        pose_goal.planner_id = "GridBased"
+
+        # TODO add orientation
+        pose_goal.use_start = False
+        return pose_goal
 
     async def planning_state(self) -> CmdStates:
         # effectively skip to next cycle if these are none
         if self.map_helper is None:
+            self.get_logger().warn(f"Skipping cycle for missing map")
             return self.CmdStates.PLANNING
         if self.known_obj_list is None:
+            self.get_logger().warn(f"Skipping cycle for missing known objects")
             return self.CmdStates.PLANNING
 
-        if self.next_planning_object_idx >= len(self.known_obj_list):
+        if self.next_planning_object_idx >= len(self.known_obj_list.objects):
             self.get_logger().warn(f"{len(self.known_obj_list)} locations all visited!")
             return self.CmdStates.IDLE
 
-        obj :KnownObject = self.known_obj_list[self.next_planning_object_idx]
+        obj :KnownObject = self.known_obj_list.objects[self.next_planning_object_idx]
 
         # TODO check id is 0
 
@@ -274,21 +315,28 @@ class GoalMover(Node):
 
         # TODO search for a "free" spot on the map next to the goal
 
-        pose_goal = ComputePathToPose.Goal()
 
-        pose_goal.goal.header = loc.header
-        pose_goal.goal.pose.position.x = loc.point.x
-        pose_goal.goal.pose.position.y = loc.point.y
+        # TODO make this into a function after verified working.
+        pose_goal = self.make_ComputePathToPose_goal(loc.point.x , loc.point.y)
         pose_goal.goal.pose.position.z = loc.point.z
-        # TODO add orientation
-        pose_goal.use_start = False
 
-        goal_handle :ClientGoalHandle = await self.compute_path_client.send_goal_async(pose_goal)
+        goal_marker = MakeCylinderMarker(id = 10, pos= pose_goal.goal.pose.position , header=pose_goal.goal.header, )
+        self.pub_marker(goal_marker)
+
+        self.get_logger().info(f"Sending goal at {pose_goal.goal.pose.position}")
+
+        goal_future = self.compute_path_client.send_goal_async(pose_goal)
+        goal_handle: ClientGoalHandle =  await self.compute_path_client.send_goal_async(pose_goal)
+
         self.get_logger().warn(f"type of goal_handle is {type(goal_handle)}, itself is \n{goal_handle}")
+
         if not goal_handle.accepted:
-            raise ValueError("Not accepting goal!")
+            raise ValueError("goal rejected!")
+
         res :ComputePathToPose.Result = await goal_handle.get_result_async()
         self.get_logger().warn(f"type of res is {type(res)}, itself is \n{res}")
+
+
         if res.status != GoalStatus.STATUS_SUCCEEDED:
             raise RuntimeError(f"Did not get successful goal result, got {res.status}" )
         result : ComputePathToPose.Result = res.result

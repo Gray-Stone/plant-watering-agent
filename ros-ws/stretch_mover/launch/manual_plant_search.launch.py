@@ -14,8 +14,8 @@ def generate_launch_description():
 
     rtabmap_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([stretch_mover_share, "/launch/rtabmap_mapping.launch.py"]),
-        # launch_arguments={"stretch_mode": "gamepad"}.items(),
-        launch_arguments={"stretch_mode": "position"}.items(),
+        launch_arguments={"stretch_mode": "gamepad"}.items(),
+        # launch_arguments={"stretch_mode": "position"}.items(),
     )
 
     nav2_launch = IncludeLaunchDescription(PythonLaunchDescriptionSource(

@@ -54,7 +54,7 @@ def generate_launch_description():
         "Grid/FootprintHeight": "0.6",
 
         "Grid/MaxObstacleHeight": '2.0',
-        "Grid/MaxGroundHeight": '0.02',
+        "Grid/MaxGroundHeight": '0.03',
         "Grid/RayTracing": 'True',
         # "Grid/CellSize": 0.05 # default 0.05
     }

@@ -13,7 +13,7 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from builtin_interfaces.msg import Duration
 from builtin_interfaces.msg import Time as RosTime
-from geometry_msgs.msg import Point, PointStamped, TransformStamped, Vector3
+from geometry_msgs.msg import Point, PointStamped, TransformStamped, Vector3 , PoseStamped, Pose
 from nav2_msgs.action import ComputePathToPose, FollowPath, NavigateToPose
 from nav_msgs.msg import MapMetaData, OccupancyGrid
 from rclpy.action import ActionClient
@@ -22,6 +22,8 @@ from rclpy.node import Node
 # from sensor_msgs.msg import CameraInfo, Image as ImageMsg
 from std_msgs.msg import ColorRGBA, Header
 from std_msgs.msg import String as StringMsg
+from std_srvs.srv import Trigger as TriggerSrv
+
 from stretch_mover.msg import (KnownObject, KnownObjectList, YoloDetection,
                                YoloDetectionList)
 from tf2_geometry_msgs.tf2_geometry_msgs import do_transform_point
@@ -31,7 +33,7 @@ from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-
+from collections import deque
 
 COLOR_MSG_LIST_RGBW = [
     ColorRGBA(r=1.0,b=0.0,g=0.0,a=1.0),
@@ -97,6 +99,19 @@ class OccupancyGridHelper():
                 valid_nbr.append(loc)
 
         return valid_nbr
+
+    def GetRing(self,center_loc:tuple[int,int] , ring_radius:int) -> list[tuple[int,int]]:
+        cx,cy = center_loc
+        ring_list = []
+        for dx in range (-ring_radius , ring_radius +1):
+            for dy in range (-ring_radius , ring_radius +1):
+                if int(round(np.sqrt(dx**2 + dy**2))) == ring_radius:
+                    potential_xy = [cx+dx ,cy+dy]
+                    if self.ValidLoc(potential_xy):
+                        ring_list.append(potential_xy)
+        return ring_list
+
+
 
     def get_data(self, map_loc: tuple[int,int])-> Optional[int]:
         if not self.ValidLoc(map_loc):
@@ -172,6 +187,7 @@ def MakeCylinderMarker(id,
 
 class GoalMover(Node):
 
+    PAUSE_DURATION = 3.0
 
     class CmdStates(Enum):
         IDLE = enum.auto()
@@ -202,6 +218,8 @@ class GoalMover(Node):
         self.known_obj_list: KnownObjectList = None
         self.next_planning_object_idx = 0
         self.current_chasing_obj : KnownObject = None
+        self.successful_planned_pose: Pose = None
+        self.max_plan_offset_radius = 0.48 # arm length is 0.52
 
         self.state = self.CmdStates.IDLE
 
@@ -212,6 +230,14 @@ class GoalMover(Node):
         self.state_change_publisher = self.create_publisher(StringMsg , "move_plant_state_change" , 2)
         self.marker_pub = self.create_publisher(Marker, "VisualizationMarker" , 1)
 
+        #### Service client
+        # /switch_to_navigation_mode [std_srvs/srv/Trigger]
+        # /switch_to_position_mode [std_srvs/srv/Trigger]
+        # /switch_to_trajectory_mode [std_srvs/srv/Trigger]
+        service_client_cb_group = MutuallyExclusiveCallbackGroup()
+
+        self.switch_nav_service = self.create_client(TriggerSrv,"switch_to_navigation_mode" ,callback_group=service_client_cb_group)
+
         #### Action client
         action_cb_group = MutuallyExclusiveCallbackGroup()
 
@@ -220,17 +246,16 @@ class GoalMover(Node):
                                                 "compute_path_to_pose",
                                                 callback_group=action_cb_group)
         self.navigate_to_pose_client = ActionClient(self,
-                                                    ComputePathToPose,
+                                                    NavigateToPose,
                                                     "/navigate_to_pose",
                                                     callback_group=action_cb_group)
-
         # Subscribers
         self.map_subs = self.create_subscription(OccupancyGrid, "/map" , self.global_map_cb , 1)
         # self.map_subs = self.create_subscription(OccupancyGrid, "/local_costmap/costmap" , self.global_map_cb , 1)
         self.known_obj_subs  = self.create_subscription(  KnownObjectList , known_object_topic , self.known_obj_cb , 1)
 
         ## main timer
-        self.create_timer(0.1,self.main_timer)
+        self.create_timer(0.5,self.main_timer)
         self.get_logger().info("Node configured, timer created!")
 
         self.state_update(self.CmdStates.PLANNING)
@@ -261,14 +286,22 @@ class GoalMover(Node):
             # Do nothing in idle state.
             return
 
-        if self.state == self.CmdStates.PAUSE:
+        elif self.state == self.CmdStates.PAUSE:
             if time.time() - self.pause_start_time > self.PAUSE_DURATION:
                 # self.get_logger().info("Pause timed up")
                 self.state_update(self.CmdStates.PLANNING)
             return
 
-        if self.state == self.CmdStates.PLANNING:
+        elif self.state == self.CmdStates.PLANNING:
             self.state_update(await self.planning_state())
+
+        elif self.state == self.CmdStates.MOVING:
+            self.state_update(await self.moving_state())
+
+        else:
+            self.get_logger().error(f"Stuck in non-existing state: {self.state}")
+            raise RuntimeError(f"Stuck in non-existing state: {self.state}")
+        # Reached here cuz state is just wrong !
 
     def make_ComputePathToPose_goal(self , x,y):
         pose_goal = ComputePathToPose.Goal()
@@ -285,6 +318,20 @@ class GoalMover(Node):
         pose_goal.use_start = False
         return pose_goal
 
+    async def ActionSendAwait(self,goal_obj , client : ActionClient , feedback_cb = None )-> tuple [GoalStatus,any]:
+
+        goal_handle: ClientGoalHandle =  await client.send_goal_async(goal_obj , feedback_callback=feedback_cb)
+
+        if not goal_handle.accepted:
+            raise ValueError("goal rejected!")
+
+        # for example res is a "ComputePathToPose_GetResult_Response" object.
+        res = await goal_handle.get_result_async()
+        # self.get_logger().warn(f"type of res is {type(res)}, itself is \n{res}")
+
+        # if res.status != GoalStatus.STATUS_SUCCEEDED:
+        return res.status,  res.result
+
     async def planning_state(self) -> CmdStates:
         # effectively skip to next cycle if these are none
         if self.map_helper is None:
@@ -295,60 +342,130 @@ class GoalMover(Node):
             return self.CmdStates.PLANNING
 
         if self.next_planning_object_idx >= len(self.known_obj_list.objects):
-            self.get_logger().warn(f"{len(self.known_obj_list)} locations all visited!")
+            self.get_logger().warn(f"{len(self.known_obj_list.objects)} locations all visited!")
             return self.CmdStates.IDLE
 
         obj :KnownObject = self.known_obj_list.objects[self.next_planning_object_idx]
 
-        # TODO check id is 0
+        self.get_logger().warn(f"Processing Object at index {self.next_planning_object_idx}")
+
+        if obj.object_class != 0  :
+            self.get_logger().warn(f"Skipping Object typeof type {obj.object_class} ")
+            self.next_planning_object_idx +=1 # Move on to the next one.
+            return self.CmdStates.PLANNING
 
         self.current_chasing_obj = obj
-        loc = obj.space_loc
-        if loc.header.frame_id != self.map_helper.map.header.frame_id:
+        object_world_loc = obj.space_loc
+        if object_world_loc.header.frame_id != self.map_helper.map.header.frame_id:
             # TODO we just don't handle this at all
             self.get_logger().error(
-                f"Target Loc frame {loc.header.frame_id} not in same frame as map {self.map_helper.map.header.frame_id}! "
+                f"Target Loc frame {object_world_loc.header.frame_id} not in same frame as map {self.map_helper.map.header.frame_id}! "
             )
             raise ValueError(
-                f"Target Loc frame {loc.header.frame_id} not in same frame as map {self.map_helper.map.header.frame_id}! "
+                f"Target Loc frame {object_world_loc.header.frame_id} not in same frame as map {self.map_helper.map.header.frame_id}! "
             )
 
-        # TODO search for a "free" spot on the map next to the goal
 
+        # Search go out as a circle.
+        # every time the potential points are emptied, search radius increase and fill the list again.
+        object_map_coord = self.map_helper.world_point_to_map(object_world_loc.point)
+        planning_xy = (object_world_loc.point.x, object_world_loc.point.y)
+        potential_loc_xy = deque()
+        last_search_radius = 0 # integer unit in map grid number
+        while True:
+            # The loop is put into this order so planning_xy is pre-defined and fetch-able by outside.
+            loc_x, loc_y = planning_xy
+            pose_goal = self.make_ComputePathToPose_goal(loc_x, loc_y)
+            # pose_goal.goal.pose.position.z = loc.point.z
 
-        # TODO make this into a function after verified working.
-        pose_goal = self.make_ComputePathToPose_goal(loc.point.x , loc.point.y)
-        pose_goal.goal.pose.position.z = loc.point.z
+            goal_marker = MakeCylinderMarker(id = 10, pos= pose_goal.goal.pose.position , header=pose_goal.goal.header, )
+            self.pub_marker(goal_marker)
 
-        goal_marker = MakeCylinderMarker(id = 10, pos= pose_goal.goal.pose.position , header=pose_goal.goal.header, )
-        self.pub_marker(goal_marker)
+            self.get_logger().info(f"Sending goal at {pose_goal.goal.pose.position}")
 
-        self.get_logger().info(f"Sending goal at {pose_goal.goal.pose.position}")
+            result : ComputePathToPose.Result
+            status , result = await self.ActionSendAwait(pose_goal , self.compute_path_client)
+            if status != GoalStatus.STATUS_SUCCEEDED:
+                self.get_logger().warn(f"Did not get successful goal result, got {status}" )
+            else:
+                # This is the successful break condition.
+                break
 
-        goal_future = self.compute_path_client.send_goal_async(pose_goal)
-        goal_handle: ClientGoalHandle =  await self.compute_path_client.send_goal_async(pose_goal)
+            # Need to add more search-able locations. We add a "ring" at a time.
+            if len(potential_loc_xy) ==0:
+                self.get_logger().warn(f"At search radius {last_search_radius} around {object_world_loc.point} Did not get valid goal")
+                last_search_radius += 1
 
-        self.get_logger().warn(f"type of goal_handle is {type(goal_handle)}, itself is \n{goal_handle}")
+                # A failure termination condition
+                if last_search_radius / self.map_helper.map_info.resolution > self.max_plan_offset_radius:
+                    self.get_logger().error(
+                        f"MAX Plan offset radius reached for {object_world_loc.point}"
+                        f" Skipping object at index {self.next_planning_object_idx}")
+                    self.next_planning_object_idx +=1 # Move on to the next one.
+                    return self.CmdStates.PLANNING
 
-        if not goal_handle.accepted:
-            raise ValueError("goal rejected!")
+                maybe_map_coords = self.map_helper.GetRing(
+                    object_map_coord, last_search_radius)
+                for coord in maybe_map_coords:
+                    # Only checking cell is free here. Actually reach-ability is only check-able by planner.
+                    if self.map_helper.get_data(coord) < 95 :
+                        potential_loc_xy.append( self.map_helper.map_loc_to_world(coord) )
 
-        res :ComputePathToPose.Result = await goal_handle.get_result_async()
-        self.get_logger().warn(f"type of res is {type(res)}, itself is \n{res}")
+                self.get_logger().warn(f"Found {len(potential_loc_xy)} cells to check at ring of radius {last_search_radius}")
 
+            # Try to see if this location is plan-able by nav2.
+            planning_xy = potential_loc_xy.popleft()
 
-        if res.status != GoalStatus.STATUS_SUCCEEDED:
-            raise RuntimeError(f"Did not get successful goal result, got {res.status}" )
-        result : ComputePathToPose.Result = res.result
-        self.get_logger().info(f"Planning result {result}")
+        # End of loop
+
+        near_end_pose_stamped:  PoseStamped = result.path.poses[-2]
+        self.successful_planned_pose = near_end_pose_stamped.pose
+        self.successful_planned_pose.position.x = planning_xy[0]
+        self.successful_planned_pose.position.y = planning_xy[1]
+
+        self.get_logger().info(f"Got a planned path to {planning_xy} , planning_time {result.planning_time} ")
+        self.get_logger().info(f"Recording with pose {self.successful_planned_pose}")
 
         # TODO record something for MOVING state to do.
+        # We actually just record this successful point and ask nav2 to replay.
 
         # After planning move to executing
         self.next_planning_object_idx +=1 # increment planning counter
         return self.CmdStates.MOVING
 
+    async def moving_state(self) -> CmdStates:
 
+        # First put robot in nav mode
+        self.get_logger().info(f"switching to nav mode")
+        ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
+        self.get_logger().info(f"ret from switch nav {ret} ")
+
+
+
+        nav_goal = NavigateToPose.Goal()
+        nav_goal.pose.header.frame_id = self.world_frame
+        nav_goal.pose.header.stamp = self.get_clock().now().to_msg()
+        nav_goal.pose.pose = self.successful_planned_pose
+        nav_goal.pose.pose = self.successful_planned_pose
+        for i in range(3):
+            def print_fb(fb_msg):
+                self.get_logger().info(f"Getting feedback {fb_msg}")
+
+            result : NavigateToPose.Result
+            status, result = await self.ActionSendAwait(
+                nav_goal,
+                self.navigate_to_pose_client,
+                # print_fb,
+            )
+            if status != GoalStatus.STATUS_SUCCEEDED:
+                self.get_logger().warn(f"Did not get successful goal result, got {status}" )
+            else:
+                # This is the successful break condition.
+                break
+        else:
+            self.get_logger().error(f"Repeated Failure trying to nav to {nav_goal.pose.pose.position}")
+
+        return self.CmdStates.PAUSE
 
 def main(args=None):
     rclpy.init(args=args)

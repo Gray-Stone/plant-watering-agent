@@ -79,6 +79,8 @@ ament_target_dependencies(masked_depth_process
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(masked_depth_process "${cpp_typesupport_target}")
 
+ament_python_install_package(stretch_mover_utils)
+
 install(TARGETS trajectory_control DESTINATION lib/${PROJECT_NAME})
 install(TARGETS masked_depth_process DESTINATION lib/${PROJECT_NAME})
 
@@ -86,7 +88,7 @@ install(PROGRAMS
   scripts/QuickTrajTest.py
   scripts/yolo_process.py
   scripts/simple_depth_process.py
-  scripts/MoveToPlants.py
+  scripts/StatefulController.py
   DESTINATION lib/${PROJECT_NAME} )
 
 install(DIRECTORY

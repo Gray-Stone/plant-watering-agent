@@ -8,6 +8,8 @@ from enum import Enum
 from typing import Optional
 from action_msgs.msg import GoalStatus
 
+import math
+
 import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
@@ -35,111 +37,15 @@ from visualization_msgs.msg import Marker, MarkerArray
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from collections import deque
 
-COLOR_MSG_LIST_RGBW = [
-    ColorRGBA(r=1.0,b=0.0,g=0.0,a=1.0),
-    ColorRGBA(r=0.0,b=0.0,g=1.0,a=1.0),
-    ColorRGBA(r=0.0,b=1.0,g=0.0,a=1.0),
-    ColorRGBA(r=1.0,b=1.0,g=1.0,a=1.0),
-]
+from stretch_mover_utils.grid_utils import OccupancyGridHelper , COLOR_MSG_LIST_RGBW
 
+# COLOR_MSG_LIST_RGBW = [
+#     ColorRGBA(r=1.0,b=0.0,g=0.0,a=1.0),
+#     ColorRGBA(r=0.0,b=0.0,g=1.0,a=1.0),
+#     ColorRGBA(r=0.0,b=1.0,g=0.0,a=1.0),
+#     ColorRGBA(r=1.0,b=1.0,g=1.0,a=1.0),
+# ]
 
-class OccupancyGridHelper():
-    def __init__(self , map_msg: OccupancyGrid ):
-        self.map = map_msg
-        self.map_info = map_msg.info
-
-    def world_point_to_map(self , pose: Point):
-        return self.world_loc_to_map( (pose.x,pose.y) ,)
-
-    def world_loc_to_map(self , world_loc: tuple[float,float]):
-        # According to doc, origin is lower left corner.
-        # The map frame is x to right, y up.
-        x,y = world_loc
-        x_off = x - self.map_info.origin.position.x
-        y_off = y - self.map_info.origin.position.y
-
-        index_x = int(x_off / self.map_info.resolution)
-        index_y = int(y_off / self.map_info.resolution)
-
-        return index_x , index_y
-
-
-    def map_loc_to_world(self,map_loc : tuple[int,int])->tuple[float,float]:
-        mx , my = map_loc
-
-        point_x = mx * self.map_info.resolution + self.map_info.origin.position.x
-        point_y = my * self.map_info.resolution + self.map_info.origin.position.y
-        # This will give it's lower left corner. so need to shift it by half a cell size
-        point_x += self.map_info.resolution/2
-        point_y += self.map_info.resolution/2
-        return ( point_x , point_y)
-    def map_loc_to_world_point(self,map_loc : tuple[int,int]) -> Point:
-        wx,wy = self.map_loc_to_world(map_loc)
-        return (Point(x=wx,y=wy))
-
-    def ValidLoc(self,map_loc: tuple[int,int]):
-        x,y = map_loc
-        if x <0 or x>= self.map_info.width:
-            return False
-        if y<0 or y>= self.map_info.height:
-            return False
-        return True
-
-    def Get4Neighbor(self, map_loc: tuple[int, int]) -> list[tuple[int, int]]:
-        # TODO change this by add each after boundary check
-        x, y = map_loc
-        valid_nbr = []
-        for loc in [
-            (x + 1, y),
-            (x - 1, y),
-            (x, y + 1),
-            (x, y - 1),
-        ]:
-            if self.ValidLoc(loc):
-                valid_nbr.append(loc)
-
-        return valid_nbr
-
-    def GetRing(self,center_loc:tuple[int,int] , ring_radius:int) -> list[tuple[int,int]]:
-        cx,cy = center_loc
-        ring_list = []
-        for dx in range (-ring_radius , ring_radius +1):
-            for dy in range (-ring_radius , ring_radius +1):
-                if int(round(np.sqrt(dx**2 + dy**2))) == ring_radius:
-                    potential_xy = [cx+dx ,cy+dy]
-                    if self.ValidLoc(potential_xy):
-                        ring_list.append(potential_xy)
-        return ring_list
-
-
-
-    def get_data(self, map_loc: tuple[int,int])-> Optional[int]:
-        if not self.ValidLoc(map_loc):
-            return None
-        x,y = map_loc
-        index = y * self.map_info.width + x
-        return self.map.data[index]
-
-    def color_sphere_gen(self,map_locs:list[tuple[int,int]] , scale = 0.1)->Marker:
-        m = Marker()
-        m.scale = Vector3(x=scale,y=scale,z=scale)
-        m.type = Marker.SPHERE_LIST
-        m.header = self.map.header
-        for loc in map_locs:
-            data = self.get_data(loc)
-            m.points.append(self.map_loc_to_world_point(loc))
-
-            if data == -1:
-                m.colors.append(COLOR_MSG_LIST_RGBW[2])
-            elif data ==0 :
-                m.colors.append(COLOR_MSG_LIST_RGBW[3])
-            elif data>99:
-                m.colors.append(COLOR_MSG_LIST_RGBW[0])
-            else:
-                c = COLOR_MSG_LIST_RGBW[2]
-                c.r = data / 100
-                m.colors.append(c)
-        return m
 
 
 def map_marker_check(map_helper: OccupancyGridHelper)->Marker:
@@ -219,7 +125,9 @@ class GoalMover(Node):
         self.next_planning_object_idx = 0
         self.current_chasing_obj : KnownObject = None
         self.successful_planned_pose: Pose = None
-        self.max_plan_offset_radius = 0.48 # arm length is 0.52
+
+        self.plan_dest_clearance_radius = 0.2
+        self.max_plan_offset_radius = 0.7 # arm length is 0.52
 
         self.state = self.CmdStates.IDLE
 
@@ -369,10 +277,45 @@ class GoalMover(Node):
         # Search go out as a circle.
         # every time the potential points are emptied, search radius increase and fill the list again.
         object_map_coord = self.map_helper.world_point_to_map(object_world_loc.point)
-        planning_xy = (object_world_loc.point.x, object_world_loc.point.y)
+        # planning_xy = (object_world_loc.point.x, object_world_loc.point.y)
         potential_loc_xy = deque()
         last_search_radius = 0 # integer unit in map grid number
         while True:
+            # Need to add more search-able locations. We add a "ring" at a time.
+            if len(potential_loc_xy) ==0:
+                self.get_logger().warn(f"At search radius {last_search_radius} around {object_world_loc.point} Did not get valid goal")
+                last_search_radius += 1
+
+                # A failure termination condition
+                if (last_search_radius * self.map_helper.map_info.resolution) > self.max_plan_offset_radius:
+                    self.get_logger().error(
+                        f"MAX Plan offset radius reached for {object_world_loc.point}\n"
+                        f"Last tried radius: cell: {last_search_radius} world: {last_search_radius * self.map_helper.map_info.resolution}"
+                        f" Skipping object at index {self.next_planning_object_idx}")
+                    self.next_planning_object_idx +=1 # Move on to the next one.
+                    return self.CmdStates.PLANNING
+
+                maybe_map_coords = self.map_helper.GetRing(
+                    object_map_coord, last_search_radius)
+
+                check_cell_rad = math.ceil(self.plan_dest_clearance_radius / self.map_helper.map_info.resolution)
+                self.get_logger().error(f"Clearance cell number {check_cell_rad}")
+
+                for coord in maybe_map_coords:
+
+                    maybe_valid , checked_coords = self.map_helper.CheckEmptyCircle(coord, check_cell_rad)
+                    # debug_marker = self.map_helper.color_sphere_gen(checked_coords ,id = 5 , color = COLOR_MSG_LIST_RGBW[1] )
+                    # print(f"checked_coords size {len(checked_coords)}")
+                    # self.pub_marker(debug_marker)
+                    if maybe_valid: 
+                        potential_loc_xy.append( self.map_helper.map_loc_to_world(coord) )
+
+                self.get_logger().warn(f"Found {len(potential_loc_xy)} cells to check at ring of radius {last_search_radius}")
+                continue # Just in case we didn't add any valid cell
+            # Try to see if this location is plan-able by nav2.
+            planning_xy = potential_loc_xy.popleft()
+
+
             # The loop is put into this order so planning_xy is pre-defined and fetch-able by outside.
             loc_x, loc_y = planning_xy
             pose_goal = self.make_ComputePathToPose_goal(loc_x, loc_y)
@@ -391,30 +334,6 @@ class GoalMover(Node):
                 # This is the successful break condition.
                 break
 
-            # Need to add more search-able locations. We add a "ring" at a time.
-            if len(potential_loc_xy) ==0:
-                self.get_logger().warn(f"At search radius {last_search_radius} around {object_world_loc.point} Did not get valid goal")
-                last_search_radius += 1
-
-                # A failure termination condition
-                if last_search_radius / self.map_helper.map_info.resolution > self.max_plan_offset_radius:
-                    self.get_logger().error(
-                        f"MAX Plan offset radius reached for {object_world_loc.point}"
-                        f" Skipping object at index {self.next_planning_object_idx}")
-                    self.next_planning_object_idx +=1 # Move on to the next one.
-                    return self.CmdStates.PLANNING
-
-                maybe_map_coords = self.map_helper.GetRing(
-                    object_map_coord, last_search_radius)
-                for coord in maybe_map_coords:
-                    # Only checking cell is free here. Actually reach-ability is only check-able by planner.
-                    if self.map_helper.get_data(coord) < 95 :
-                        potential_loc_xy.append( self.map_helper.map_loc_to_world(coord) )
-
-                self.get_logger().warn(f"Found {len(potential_loc_xy)} cells to check at ring of radius {last_search_radius}")
-
-            # Try to see if this location is plan-able by nav2.
-            planning_xy = potential_loc_xy.popleft()
 
         # End of loop
 

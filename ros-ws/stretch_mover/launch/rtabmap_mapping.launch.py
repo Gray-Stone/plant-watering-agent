@@ -9,7 +9,6 @@ from ament_index_python.packages import get_package_share_directory
 from pathlib import Path
 
 def generate_launch_description():
-    stretch_core_path = get_package_share_directory('stretch_core')
     stretch_mover_share = get_package_share_directory('stretch_mover')
     stretch_rtabmap_path = get_package_share_directory('stretch_rtabmap')
     stretch_navigation_path = get_package_share_directory('stretch_nav2')
@@ -24,15 +23,6 @@ def generate_launch_description():
     rviz_config = DeclareLaunchArgument('rviz_config',
                                         default_value=str(Path(stretch_mover_share) / 'config/rtabmap.rviz'))
 
-    teleop_type_param = DeclareLaunchArgument(
-        'teleop_type', default_value="joystick", description="how to teleop ('keyboard', 'joystick' or 'none')")
-
-    stretch_driver_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([stretch_core_path, '/launch/stretch_driver.launch.py']),
-        launch_arguments={'mode': LaunchConfiguration('stretch_mode') , 'broadcast_odom_tf': 'True'}.items())
-
-    d435i_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([stretch_core_path, '/launch/d435i_high_resolution.launch.py']))
 
     rtabmap_parameters = {
 
@@ -74,9 +64,6 @@ def generate_launch_description():
         ],
         output='screen',
         )
-    base_teleop_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([stretch_navigation_path, '/launch/teleop_twist.launch.py']),
-        launch_arguments={'teleop_type': LaunchConfiguration('teleop_type')}.items())
 
     rviz_launch = Node(package='rviz2', executable='rviz2',
         output='log',
@@ -89,10 +76,6 @@ def generate_launch_description():
         rviz_param,
         rviz_config,
         driver_mode_arg,
-        teleop_type_param,
-        stretch_driver_launch,
-        d435i_launch,
         rtabmap_mapping_node,
-        base_teleop_launch,
         rviz_launch,
     ])

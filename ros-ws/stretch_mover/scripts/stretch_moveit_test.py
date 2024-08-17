@@ -37,13 +37,45 @@ from collections import deque
 
 from stretch_mover_utils.grid_utils import OccupancyGridHelper , COLOR_MSG_LIST_RGBW
 
-from 
+from octomap_msgs.msg import OctomapWithPose , Octomap
+from moveit_msgs.msg import PlanningSceneWorld
+
+
+class OctoMapRelay(Node):
+    def __init__(self):
+
+        super().__init__("Octomap_scene_relay")
+
+        self.declare_parameter("world_frame" , 'map')
+
+        self.world_frame = self.get_parameter("world_frame").get_parameter_value().string_value
+
+        self.planning_scene_world_pub =  self.create_publisher(PlanningSceneWorld , "planning_scene_world" , 1)
+                
+        # /octomap_binary [octomap_msgs/msg/Octomap] to /planning_scene_world
+
+        # self.create_subscription(Octomap , "octomap_binary" , self.octomap_cb ,1 )
+        self.create_subscription(Octomap , "octomap_full" , self.octomap_cb ,1 )
 
 
 
+
+    def octomap_cb(self , octomap_msg : Octomap):
+        print(f"header {octomap_msg.header }")
+        print(f"binary {octomap_msg.binary }")
+        print(f"id {octomap_msg.id  }")
+        print(f"resolution {octomap_msg.resolution }")
+
+        scene_world = PlanningSceneWorld()
+        scene_world.octomap.header.frame_id = self.world_frame
+        scene_world.octomap.header.stamp = self.get_clock().now().to_msg()
+        scene_world.octomap.octomap = octomap_msg
+        self.planning_scene_world_pub.publish(scene_world)
+
+        
 
 if __name__ == "__main__":
+    
     rclpy.init()
-    logger = rclpy.logging.get_logger("moveit_py.pose_goal")
-    mp = MoveItPy(node_name="moveit_py")
-
+    node = OctoMapRelay()
+    rclpy.spin(node)

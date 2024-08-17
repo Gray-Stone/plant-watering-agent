@@ -67,6 +67,10 @@ Which you will get `[stretch_driver-3] [WARNING] [lift]: Joint traj not valid: s
 
 The PickNikRobotics have a much better joint limits. The acceleration is lower then what stretch_driver said, but seems to be a good starting point. but don't forget the wrist roll and pitch joint which doesn't exsits in PickNik's version (not sure the position/x and position/theta it decleared in this is doing anything.)
 
+However, changing the joint limit file doesn't seems to do much of anything. Which is strange.
+
+Thus, ignoreing the joint limit part, will just use a much vel and acc scaler
+
 ## stretch Driver param
 
 In stretch's driver code, there is this param
@@ -84,3 +88,34 @@ looking at this tutorial https://moveit.picknik.ai/main/doc/examples/perception_
 Seems like there are two types of input.
 * PointCloud Occupancy Map Updater, takes in point clouds.  
 * depth image occupancy map updater. Take in Depth image.
+
+### Using rtabmap's octomap
+
+Since updating the octomap is actually eats a lot of computing power. one should directly give the existing 3d map from rtabmap to moveit. 
+
+Moveit's `/planning_scene_world` topic could be a good option. Directly take a full octomap.
+https://answers.ros.org/question/405978/how-to-construct-a-planningsceneworld-message-in-moveit2/
+
+Another option is to make a "fake" perception pipeline publisher. Take in the rtabmap point cloud and Publish as a fake sensor value 
+
+The worse option is to have a "relay" of sensor point cloud. Only turn it on when we are able to plan for the plant.
+
+
+## kinematics
+
+```
+[move_group-3] [WARN] [1723770238.962241645] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[move_group-3] [ERROR] [1723770238.962534111] [kinematics_plugin_loader]: The kinematics plugin (mobile_base_arm) failed to load. Error: According to the loaded plugin descriptions the class stretch_kinematics_plugin/StretchKinematicsPlugin with base class type kinematics::KinematicsBase does not exist. Declared types are  cached_ik_kinematics_plugin/CachedKDLKinematicsPlugin cached_ik_kinematics_plugin/CachedSrvKinematicsPlugin kdl_kinematics_plugin/KDLKinematicsPlugin lma_kinematics_plugin/LMAKinematicsPlugin srv_kinematics_plugin/SrvKinematicsPlugin
+[move_group-3] [ERROR] [1723770238.962545594] [moveit_ros.robot_model_loader]: Kinematics solver could not be instantiated for joint group mobile_base_arm.
+```
+
+There needs to be a stretch kinematic plugin, which is not standard available via apt package.
+
+PickNikRobotics have a package https://github.com/PickNikRobotics/stretch_moveit_plugins/tree/main/stretch_kinematics_plugin
+
+The fluentrobotics also have one https://github.com/fluentrobotics/stretch_ros2/tree/moveit2/stretch_moveit2/stretch_moveit_plugins/stretch_kinematics_plugin/include/stretch_kinematics_plugin 
+
+Seems to be almost exactly the same excpet one invert of logic in `stretch_kinematics_plugin.cpp:232` 
+
+I'll try the PickNikRobotics one first. The `pick_place_task` demo package is causing build error so i COLCON_IGNORE it.
+

@@ -31,6 +31,8 @@ find_package(pcl_ros REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(PCL REQUIRED)
+find_package(moveit_msgs REQUIRED)
+find_package(octomap_msgs REQUIRED)
 
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -76,13 +78,30 @@ ament_target_dependencies(masked_depth_process
   PCL
 )
 
+add_executable(moveit_cmder src/moveit_cmder.cpp)
+ament_target_dependencies(moveit_cmder
+  rclcpp
+  geometry_msgs
+  sensor_msgs
+  std_msgs
+  vision_msgs
+  visualization_msgs
+  tf2_eigen
+  tf2_ros
+  octomap_msgs
+  moveit_msgs
+  moveit_ros_planning_interface
+)
+
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(masked_depth_process "${cpp_typesupport_target}")
+target_link_libraries(moveit_cmder "${cpp_typesupport_target}")
 
 ament_python_install_package(stretch_mover_utils)
 
 install(TARGETS trajectory_control DESTINATION lib/${PROJECT_NAME})
 install(TARGETS masked_depth_process DESTINATION lib/${PROJECT_NAME})
+install(TARGETS moveit_cmder DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS  
   scripts/QuickTrajTest.py

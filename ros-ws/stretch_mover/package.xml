@@ -26,6 +26,8 @@
   <depend>pcl_ros</depend>
   <depend>tf2_eigen</depend>
   <depend>tf2_ros</depend>
+  <depend>moveit_msgs</depend>
+  <depend>octomap_msgs</depend>
   <exec_depend>image_view</exec_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
 

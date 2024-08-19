@@ -29,7 +29,7 @@ from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithP
 from ultralytics_ros.msg import YoloResult
 from stretch_mover.msg import YoloDetection , YoloDetectionList
 from std_msgs.msg import Header
-
+from std_srvs.srv import SetBool
 
 
 class TrackerNode(Node):
@@ -65,6 +65,8 @@ class TrackerNode(Node):
 
         self.bridge = cv_bridge.CvBridge()
 
+        self.yolo_onoff = True
+
         input_topic = (
             self.get_parameter("input_topic").get_parameter_value().string_value
         )
@@ -82,15 +84,30 @@ class TrackerNode(Node):
         )
         self.get_logger().warn(f"yolo_result_topic: {yolo_result_topic}")
 
+
+        # TODO add bool service to turn this on off
+
         self.results_pub = self.create_publisher(YoloDetectionList, yolo_result_topic, 1)
         self.result_image_pub = self.create_publisher(Image, result_image_topic, 1)
-
+        self.on_off_server = self.create_service(SetBool,"yolo_on_off" , self.yolo_onoff_cb)
         if self.debug: 
             self.mask_debug_pub = self.create_publisher(Image,"/camera/color/combined_mask_debug" , 1)
 
         self.create_subscription(Image, input_topic, self.image_callback, 1)
 
+
+    
+    def yolo_onoff_cb(self,req : SetBool.Request , rsp : SetBool.Response) :
+        self.yolo_onoff = req.data
+        self.get_logger().warn(f"yolo process turn on ? {self.yolo_onoff}")
+        rsp.success= True
+        return rsp
+
+
     def image_callback(self, msg:Image):
+        if not self.yolo_onoff:
+            return
+            
         cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         rot_cv_image = cv2.rotate(cv_image,cv2.ROTATE_90_CLOCKWISE)
 

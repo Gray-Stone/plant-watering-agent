@@ -74,6 +74,7 @@ class DepthProcessor(Node):
         self.declare_parameter("yolo_result_topic", "yolo_ros/detections")
 
         self.declare_parameter("known_object_topic", "yolo_ros/known_objects")
+        self.declare_parameter("new_detection_topic", "yolo_ros/new_detections")
 
 
         self.declare_parameter("min_depth_range", 0.3)
@@ -95,6 +96,7 @@ class DepthProcessor(Node):
         aligned_depth_topic = (self.get_parameter("aligned_depth_topic").get_parameter_value().string_value)
         yolo_result_topic = (self.get_parameter("yolo_result_topic").get_parameter_value().string_value)
         known_object_topic = (self.get_parameter("known_object_topic").get_parameter_value().string_value)
+        new_detection_topic = (self.get_parameter("new_detection_topic").get_parameter_value().string_value)
 
         self.min_depth_range = ( self.get_parameter("min_depth_range").get_parameter_value().double_value)
         self.max_depth_range = ( self.get_parameter("max_depth_range").get_parameter_value().double_value)
@@ -118,6 +120,7 @@ class DepthProcessor(Node):
 
         self.marker_array_pub = self.create_publisher(MarkerArray, "yolo_depth_markers", 5)
         self.known_objects_pub = self.create_publisher(KnownObjectList, known_object_topic, 5)
+        self.new_detect_pub = self.create_publisher(KnownObjectList, new_detection_topic, 5)
 
 
         if self.debug:
@@ -201,8 +204,9 @@ class DepthProcessor(Node):
         if self.verbose:
             space_xyzs = []
 
-        dec : YoloDetection
+        new_objs  = KnownObjectList()
         for dec in yolo_dec_list.detections:
+            dec : YoloDetection
             mask_img = self.bridge.imgmsg_to_cv2(dec.mask , desired_encoding="mono8")
 
             # Do some basic process to help with image quality.
@@ -242,11 +246,17 @@ class DepthProcessor(Node):
                 self.get_logger().info(f"world_point {world_point}")
                 space_xyzs.append(space_xyz)
 
-            for record in  self.known_object_list:
+            for idx , record in enumerate(  self.known_object_list):
                 # try match and add
                 if record.class_id != dec.class_id:
                     continue
                 if record.TryMerge(world_point.point,self.same_object_dis_threshold , depth_msg.header.stamp):
+                    # We only add object seen for the second time to this list, prevent single cycle blip
+                    obj = KnownObject()
+                    obj.object_class = dec.class_id
+                    obj.space_loc = record.world_loc
+                    obj.id = idx
+                    new_objs.objects.append(obj)
                     break
             else:
                 # stamp from tf look up is same as depth message.
@@ -264,16 +274,15 @@ class DepthProcessor(Node):
         live_sphere_list_marker.scale.z = self.marker_size + 0.02
         live_sphere_list_marker.lifetime = Duration(sec=2)
 
-        known_obj_marker = copy.deepcopy(live_sphere_list_marker)
 
-
-        obj_list , known_obj_marker = self.make_known_object_list_msg(known_obj_marker)
-        obj_list.header = known_obj_marker.header
-        self.known_objects_pub.publish(obj_list)
+        # We only publish newly detected object here, old objs are published by timer.
+        new_objs.header.frame_id = self.world_frame
+        new_objs.header.stamp = self.get_clock().now().to_msg()
+        self.new_detect_pub.publish(new_objs)
 
         marker_array_msg = MarkerArray()
         marker_array_msg.markers.append(live_sphere_list_marker)
-        marker_array_msg.markers.append(known_obj_marker)
+        # marker_array_msg.markers.append(known_obj_marker)
 
         self.marker_array_pub.publish(marker_array_msg)
 

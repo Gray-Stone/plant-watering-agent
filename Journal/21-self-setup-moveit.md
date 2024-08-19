@@ -116,7 +116,9 @@ The best solution would be, only sync the `planning_scene_world` once before sta
 
 ### Floor
 
-Somehow regardless how the 
+Somehow regardless how I set the "floor" threshold in rtabmap, the output octomap will always include the floor as occupied.
+
+This mean in the middle of relaying the octomap over, all floor nodes need to be filtered and set to "free"
 
 ## kinematics
 

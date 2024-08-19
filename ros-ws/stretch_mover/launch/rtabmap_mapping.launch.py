@@ -10,15 +10,8 @@ from pathlib import Path
 
 def generate_launch_description():
     stretch_mover_share = get_package_share_directory('stretch_mover')
-    stretch_rtabmap_path = get_package_share_directory('stretch_rtabmap')
-    stretch_navigation_path = get_package_share_directory('stretch_nav2')
 
     rviz_param = DeclareLaunchArgument('use_rviz', default_value='true', choices=['true', 'false'])
-    driver_mode_arg = DeclareLaunchArgument(
-        'stretch_mode',
-        default_value='position', choices=['position', 'navigation', 'trajectory', 'gamepad'],
-        description='The mode in which the ROS driver commands the robot'
-    )
 
     rviz_config = DeclareLaunchArgument('rviz_config',
                                         default_value=str(Path(stretch_mover_share) / 'config/rtabmap.rviz'))
@@ -39,14 +32,14 @@ def generate_launch_description():
         "Grid/RangeMax": '4.0',
         
         # rough value from the stored mode.
-        "Grid/FootprintLength": "0.6",
-        "Grid/FootprintWidth": "0.3",
-        "Grid/FootprintHeight": "0.6",
+        "Grid/FootprintLength": "0.5",
+        "Grid/FootprintWidth": "0.5",
+        "Grid/FootprintHeight": "1.2",
 
         "Grid/MaxObstacleHeight": '2.0',
-        "Grid/MaxGroundHeight": '0.03',
+        "Grid/MaxGroundHeight": '0.1',
         "Grid/RayTracing": 'True',
-        # "Grid/CellSize": 0.05 # default 0.05
+        "Grid/CellSize": "0.025" # default 0.05
     }
     rtabmap_mapping_node = Node(
         package='rtabmap_slam',
@@ -59,7 +52,7 @@ def generate_launch_description():
             ('rgb/image', '/camera/color/image_raw'),
             ('depth/image', '/camera/aligned_depth_to_color/image_raw'),
             ('rgb/camera_info', '/camera/color/camera_info'),
-            # TODO consider change this remap
+            # this map also change as environment change, object disappear after move.
             ('grid_map', 'map'),
         ],
         output='screen',
@@ -75,7 +68,6 @@ def generate_launch_description():
     return LaunchDescription([
         rviz_param,
         rviz_config,
-        driver_mode_arg,
         rtabmap_mapping_node,
         rviz_launch,
     ])

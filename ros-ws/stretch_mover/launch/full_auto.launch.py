@@ -17,8 +17,17 @@ def generate_launch_description():
 
     rtabmap_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([stretch_mover_share, "/launch/rtabmap_mapping.launch.py"]),
-        launch_arguments={"stretch_mode": "gamepad"}.items(),
-        # launch_arguments={"stretch_mode": "navigation"}.items(),
+        launch_arguments={"use_rviz": "false"}.items(),
+    )
+
+    rviz_config = DeclareLaunchArgument('rviz_config',
+                                        default_value=str(Path(stretch_mover_share) / 'config/All-combined.rviz'))
+    rviz_param = DeclareLaunchArgument('use_rviz', default_value='true', choices=['true', 'false'])
+
+    stretch_mode = DeclareLaunchArgument(
+        'stretch_mode',
+        default_value='gamepad', choices=['position', 'navigation', 'trajectory', 'gamepad'],
+        description='The mode in which the ROS driver commands the robot'
     )
 
     teleop_type_param = DeclareLaunchArgument(
@@ -83,13 +92,26 @@ def generate_launch_description():
         output='screen',
     )
 
+    rviz_launch = Node(package='rviz2', executable='rviz2',
+        output='log',
+        condition=IfCondition(LaunchConfiguration('use_rviz')),
+        respawn=True,
+        arguments=['-d', LaunchConfiguration('rviz_config')],
+        )
+
     return LaunchDescription([
+        # Params
+        rviz_config,
+        rviz_param,
+        stretch_mode,
+
         # Robot driver.
         stretch_driver_launch,
         d435i_launch,
         # Teleop
         teleop_type_param,
         base_teleop_launch,
+        rviz_launch,
         # Nav related
         rtabmap_launch,
         nav2_launch,
@@ -97,5 +119,5 @@ def generate_launch_description():
         # YOLO
         yolo_process,
         simple_depth_process,
-        stateful_controller,
+        # stateful_controller,
     ])

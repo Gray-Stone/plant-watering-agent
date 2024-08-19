@@ -89,6 +89,8 @@ Seems like there are two types of input.
 * PointCloud Occupancy Map Updater, takes in point clouds.  
 * depth image occupancy map updater. Take in Depth image.
 
+However, the floor is going to be count into the octomap by moveit, since moveit have no idea what a floor is (it's not designed for mobile robot). Which mean the base won't be able to move anywhere when generating point cloud in this way.
+
 ### Using rtabmap's octomap
 
 Since updating the octomap is actually eats a lot of computing power. one should directly give the existing 3d map from rtabmap to moveit. 
@@ -100,6 +102,21 @@ Another option is to make a "fake" perception pipeline publisher. Take in the rt
 
 The worse option is to have a "relay" of sensor point cloud. Only turn it on when we are able to plan for the plant.
 
+### Collision with own octomap.
+
+One big problem with directly giving moveit the octomap from rtbmap is the voxels of the arm itself.
+
+when looking at the arm's direction, there will be voxels generated from seeing the arm. When we give the data to moveit by `planning_scene_world`, these voxels will end up making moveit think the arm is currently in collision with something, ignoring and refusing to plan.
+
+moveit's own updating does ignore voxels that;s part of the robot. However, it counts the floor in, so we can't use it.
+
+The plus side is the arm extends out to the side of the arm, so we can only update the `planning_scene_world` when not looking at the side. 
+
+The best solution would be, only sync the `planning_scene_world` once before starting to move.
+
+### Floor
+
+Somehow regardless how the 
 
 ## kinematics
 

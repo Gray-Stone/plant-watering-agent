@@ -5,6 +5,10 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+
+find_package(fmt)
+
+
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
@@ -33,7 +37,6 @@ find_package(OpenCV REQUIRED)
 find_package(PCL REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(octomap_msgs REQUIRED)
-
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/YoloDetection.msg"
@@ -92,6 +95,8 @@ ament_target_dependencies(moveit_cmder
   moveit_msgs
   moveit_ros_planning_interface
 )
+target_link_libraries(moveit_cmder fmt::fmt)
+
 
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(masked_depth_process "${cpp_typesupport_target}")

@@ -1,6 +1,8 @@
 #include <chrono>
 #include <memory>
 
+#include <fmt/format.h>
+
 #include <rclcpp/client.hpp>
 #include <rclcpp/executors.hpp>
 #include <rclcpp/logging.hpp>
@@ -31,7 +33,7 @@
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <std_srvs/srv/trigger.hpp>
-
+#include<moveit/utils/moveit_error_code.h>
 using moveit::planning_interface::MoveGroupInterface;
 
 namespace {
@@ -47,6 +49,29 @@ template <class T> std::ostream &operator<<(std::ostream &os, const std::vector<
   return os;
 }
 
+
+
+  visualization_msgs::msg::Marker MakeDebugArrow(geometry_msgs::msg::PoseStamped arrow_pose,
+                    double alpha = 0.5, int id = 1) {
+    visualization_msgs::msg::Marker marker;
+    marker.type = marker.ARROW;
+    marker.header = arrow_pose.header;
+    marker.action = 0;
+    marker.id = id;
+    marker.pose = arrow_pose.pose;
+    marker.color.r = 1.0;
+    marker.color.g = 0.0;
+    marker.color.b = 1.0;
+    marker.color.a = alpha;
+    marker.scale.x = 0.05;
+    marker.scale.y = 0.007;
+    marker.scale.z = 0.007;
+    return marker;
+  }
+
+
+
+
 } // namespace
 
 
@@ -57,59 +82,104 @@ class ListenerNode : public rclcpp::Node {
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
     // Let's try to do some dynamixal register fun
   }
-  // This two thing only work if the owning class is a ros node 
+  // This two thing only work if the owning class is a ros node
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-  std::optional<geometry_msgs::msg::TransformStamped> GetTF(const std::string & target_frame, const std::string & source_frame ,const rclcpp::Time & time = rclcpp::Time() ){
+  std::optional<geometry_msgs::msg::PoseStamped>
+  PoseIntoPoint(const geometry_msgs::msg::PointStamped &input_point,
+                const std::string &target_frame) {
     try {
-      auto map_base_tf = tf_buffer_->lookupTransform(target_frame, source_frame, time);
-      
-      return map_base_tf;
+      geometry_msgs::msg::PointStamped new_point = tf_buffer_->transform(input_point, target_frame);
+      double z_angle = std::atan2(new_point.point.y, new_point.point.x);
+
+      tf2::Quaternion target_q;
+      // Here is the magic, the description of setEuler is mis-leading!
+      target_q.setRPY(0.0, 0.0, z_angle);
+      // Example of a little angle down, Use this for toggle switch.
+      // target_q.setRPY(0.0, angle_down, z_angle);
+      geometry_msgs::msg::PoseStamped out_pose;
+      out_pose.header = new_point.header;
+      out_pose.pose.position = new_point.point;
+
+      out_pose.pose.orientation.w = target_q.w();
+      out_pose.pose.orientation.x = target_q.x();
+      out_pose.pose.orientation.y = target_q.y();
+      out_pose.pose.orientation.z = target_q.z();
+
+      return out_pose;
 
     } catch (const tf2::TransformException &ex) {
-      RCLCPP_WARN_STREAM(get_logger(), "Could not transform : " << source_frame << "to" << target_frame <<" \n" << ex.what());
+      RCLCPP_WARN_STREAM(get_logger(), "Could not transform : " << input_point.header.frame_id
+                                                                << "to" << target_frame << " \n"
+                                                                << ex.what());
       // TODO ignore it if can't find a good transform
       return std::nullopt;
     }
   }
-  
+
+  std::optional<geometry_msgs::msg::PointStamped>
+  TransPoint(const geometry_msgs::msg::PointStamped &input_point, const std::string &target_frame) {
+    try {
+
+      return tf_buffer_->transform(input_point, target_frame);
+    } catch (const tf2::TransformException &ex) {
+      RCLCPP_WARN_STREAM(get_logger(), "Could not transform point from "
+                                           << input_point.header.frame_id << "to" << target_frame
+                                           << " \n"
+                                           << ex.what());
+      // TODO ignore it if can't find a good transform
+      return std::nullopt;
+    }
+  }
+
+  std::optional<geometry_msgs::msg::TransformStamped>
+  GetTF(const std::string &target_frame, const std::string &source_frame,
+        const rclcpp::Time &time = rclcpp::Time()) {
+    try {
+      auto map_base_tf = tf_buffer_->lookupTransform(target_frame, source_frame, time);
+
+      return map_base_tf;
+
+    } catch (const tf2::TransformException &ex) {
+      RCLCPP_WARN_STREAM(get_logger(), "Could not transform : " << source_frame << "to"
+                                                                << target_frame << " \n"
+                                                                << ex.what());
+      // TODO ignore it if can't find a good transform
+      return std::nullopt;
+    }
+  }
 };
 
-class OctomapRelay : public rclcpp::Node{
-    public:
-    OctomapRelay(): Node("OctomapRelay") {
+class OctomapRelay : public rclcpp::Node {
+public:
+  OctomapRelay() : Node("OctomapRelay") {
 
-      octomap_sub_ = create_subscription<octomap_msgs::msg::Octomap>(
-          "octomap_binary", 2, std::bind(&OctomapRelay::OctomapCB, this, std::placeholders::_1));
-      planning_scene_w_pub_ = create_publisher<moveit_msgs::msg::PlanningSceneWorld>("planning_scene_world", 2);
+    octomap_sub_ = create_subscription<octomap_msgs::msg::Octomap>(
+        "octomap_binary", 2, std::bind(&OctomapRelay::OctomapCB, this, std::placeholders::_1));
+    planning_scene_w_pub_ =
+        create_publisher<moveit_msgs::msg::PlanningSceneWorld>("planning_scene_world", 2);
+  }
 
-    }
+  void OctomapCB(const octomap_msgs::msg::Octomap &msg) {
 
-    void OctomapCB(const octomap_msgs::msg::Octomap &msg) {
-      RCLCPP_ERROR(get_logger() , "Got msg");
-      
-      auto octree_ptr = std::shared_ptr<octomap::OcTree>(
-          static_cast<octomap::OcTree *>(octomap_msgs::binaryMsgToMap(msg)));
+    auto octree_ptr = std::shared_ptr<octomap::OcTree>(
+        static_cast<octomap::OcTree *>(octomap_msgs::binaryMsgToMap(msg)));
 
-      RCLCPP_ERROR(get_logger() , "casted into octree obj");
+    moveit_msgs::msg::PlanningSceneWorld planning_scene_world_msg;
 
-      moveit_msgs::msg::PlanningSceneWorld planning_scene_world_msg;
-      
-      octomap_msgs::msg::Octomap output_msg;
-      octomap_msgs::binaryMapToMsg<octomap::OcTree>(*octree_ptr, planning_scene_world_msg.octomap.octomap);
-      RCLCPP_ERROR(get_logger() , "casted into octree message");
-      planning_scene_world_msg.octomap.header.frame_id = "map";
-      planning_scene_world_msg.octomap.octomap.id = "OcTree";
-      RCLCPP_ERROR(get_logger() , "sending it");
-      planning_scene_w_pub_->publish(planning_scene_world_msg);
-      RCLCPP_ERROR(get_logger() , "sent");
+    octomap_msgs::msg::Octomap output_msg;
+    octomap_msgs::binaryMapToMsg<octomap::OcTree>(*octree_ptr,
+                                                  planning_scene_world_msg.octomap.octomap);
+    planning_scene_world_msg.octomap.header.frame_id = "map";
+    planning_scene_world_msg.octomap.octomap.id = "OcTree";
+    planning_scene_w_pub_->publish(planning_scene_world_msg);
 
-      
-    }
+    RCLCPP_INFO(get_logger(), "Sent octomap msg");
+  }
 
-    rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr octomap_sub_;
-    rclcpp::Publisher<moveit_msgs::msg::PlanningSceneWorld>::SharedPtr planning_scene_w_pub_;
+  rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr octomap_sub_;
+  rclcpp::Publisher<moveit_msgs::msg::PlanningSceneWorld>::SharedPtr planning_scene_w_pub_;
 };
 
 class ArmCmder {
@@ -118,55 +188,101 @@ class ArmCmder {
   rclcpp::Node::SharedPtr node_ptr;
   std::string group_name;
   std::string ee_link_name;
+  std::string world_frame;
+  std::string robot_base_frame;
+
   bool xz_debug;
   bool push_mode = false;
   rclcpp::Logger logger;
   bool use_moveit_execute = false;
   std::string hardware_type;
-
   // Ros interface objects
+
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr point_subscriber;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr debug_marker_pub;
-  //   rclcpp::Client<interbotix_xs_msgs::srv::RegisterValues>::SharedPtr get_motor_reg_cli;
-  //   rclcpp::Client<interbotix_xs_msgs::srv::RegisterValues>::SharedPtr set_motor_reg_cli;
-  //   rclcpp::Client<interbotix_xs_msgs::srv::MotorGains>::SharedPtr set_motor_pid_cli;
-    rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr switch_traj_mode_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr switch_traj_mode_client_;
 
   // std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   // std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   // Move group interface
-  // moveit::planning_interface::MoveGroupInterface move_group_interface;
+  moveit::planning_interface::MoveGroupInterface move_group_interface;
   std::shared_ptr<ListenerNode> listener_node_;
 
   rclcpp::TimerBase::SharedPtr timer_;
 
-rclcpp::CallbackGroup::SharedPtr timer_cb_group;
+rclcpp::CallbackGroup::SharedPtr cmd_recv_cb_group;
 public:
   ArmCmder(rclcpp::Node::SharedPtr node_ptr, std::shared_ptr<ListenerNode> listener_node)
       : node_ptr(node_ptr),
         group_name(node_ptr->get_parameter_or<std::string>("group_name", "mobile_base_arm")),
         ee_link_name(node_ptr->get_parameter_or<std::string>("ee_link_name", "link_grasp_center")),
+        world_frame(node_ptr->get_parameter_or<std::string>("world_frame", "map")),
+        robot_base_frame(node_ptr->get_parameter_or<std::string>("robot_base_frame", "base_link")),
         logger(node_ptr->get_logger()),
-        // move_group_interface(MoveGroupInterface(node_ptr, group_name)),
+        move_group_interface(MoveGroupInterface(node_ptr, group_name)),
         listener_node_(listener_node)
   {
 
-    timer_cb_group = node_ptr->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    cmd_recv_cb_group = node_ptr->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     switch_traj_mode_client_ = node_ptr->create_client<std_srvs::srv::Trigger>("switch_to_trajectory_mode");
-    // timer_ = node_ptr->create_wall_timer(std::chrono::seconds{1} , std::bind(&ArmCmder::TimerCb , this) , timer_cb_group);
+
+    // Object that will make us receive stuff.
+    point_subscriber = node_ptr->create_subscription<geometry_msgs::msg::PointStamped>(
+        "/clicked_point", 10, std::bind(&ArmCmder::CmdCb, this, std::placeholders::_1));
+
+
   };
 
-  void TimerCb(){
-    RCLCPP_ERROR(logger ,"Start timer");
-    std_srvs::srv::Trigger_Request::SharedPtr req = std::make_shared<std_srvs::srv::Trigger_Request>();
-    auto future = switch_traj_mode_client_->async_send_request(req);
-    RCLCPP_ERROR(logger ,"req async sent");
-    auto res = future.get();
-    RCLCPP_ERROR_STREAM(logger,"got response" << res->success << " msg " << res->message   );
+  void CmdCb(const geometry_msgs::msg::PointStamped & in_msg){
+
+    RCLCPP_INFO_STREAM(logger, "Got Command toward " << geometry_msgs::msg::to_yaml(in_msg));
+
+    // Convert it into robot frame.
+    auto maybe_target_pose = listener_node_->PoseIntoPoint(in_msg , robot_base_frame);
+
+    if (maybe_target_pose ==  std::nullopt){
+      // Failed! 
+      RCLCPP_ERROR_STREAM(logger , fmt::format("Failed to Convert point into frame {} " ,world_frame));
+      return;
+    }
+
+    auto target_pose = maybe_target_pose.value();
+    auto arrow_marker = MakeDebugArrow(target_pose);
+
+    move_group_interface.setPoseTarget(target_pose, ee_link_name);
+    PlanAndMove();
 
 
   }
+
+  bool PlanAndMove(){
+    moveit::planning_interface::MoveGroupInterface::Plan plan_obj;
+    auto const plan_success = static_cast<bool>(move_group_interface.plan(plan_obj));
+
+    // Execute the plan
+    if (!plan_success) {
+    RCLCPP_INFO(logger, "======== Plan Failed !!!!! !");
+      return false;
+    }
+    RCLCPP_INFO(logger, "======== Planning SUCCEED !!!!! !");
+
+    std::vector<std::string> j_names = plan_obj.trajectory_.joint_trajectory.joint_names;
+
+    // This give the last joint trajectory_ point object.
+    std::vector<double> final_js = plan_obj.trajectory_.joint_trajectory.points.back().positions;
+    std::vector<double> start_js = plan_obj.trajectory_.joint_trajectory.points.front().positions;
+
+    RCLCPP_INFO_STREAM(logger, "js_name" << j_names);
+    RCLCPP_INFO_STREAM(logger, "Starting js " << start_js);
+    RCLCPP_INFO_STREAM(logger, "Ending js " << final_js);
+
+    moveit::core::MoveItErrorCode ret_code = move_group_interface.execute(plan_obj);
+    RCLCPP_ERROR_STREAM(logger, "Execute return " << moveit::core::error_code_to_string(ret_code));
+    return true;
+  }
+
+
 
 };
 

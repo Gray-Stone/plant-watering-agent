@@ -65,7 +65,7 @@ class TrackerNode(Node):
 
         self.bridge = cv_bridge.CvBridge()
 
-        self.yolo_onoff = True
+        self.yolo_onoff = True # Default off now.
 
         input_topic = (
             self.get_parameter("input_topic").get_parameter_value().string_value

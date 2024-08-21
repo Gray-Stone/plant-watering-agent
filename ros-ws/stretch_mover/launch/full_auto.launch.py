@@ -27,6 +27,7 @@ def generate_launch_description():
     stretch_mode = DeclareLaunchArgument(
         'stretch_mode',
         default_value='gamepad', choices=['position', 'navigation', 'trajectory', 'gamepad'],
+        # default_value='trajectory', choices=['position', 'navigation', 'trajectory', 'gamepad'],
         description='The mode in which the ROS driver commands the robot'
     )
 

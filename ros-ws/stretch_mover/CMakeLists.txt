@@ -97,6 +97,13 @@ ament_target_dependencies(moveit_cmder
 )
 target_link_libraries(moveit_cmder fmt::fmt)
 
+add_executable(move_interface_test src/move_interface_test.cpp)
+ament_target_dependencies(move_interface_test
+  rclcpp
+  moveit_ros_planning_interface
+)
+target_link_libraries(moveit_cmder fmt::fmt)
+
 
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(masked_depth_process "${cpp_typesupport_target}")
@@ -107,6 +114,7 @@ ament_python_install_package(stretch_mover_utils)
 install(TARGETS trajectory_control DESTINATION lib/${PROJECT_NAME})
 install(TARGETS masked_depth_process DESTINATION lib/${PROJECT_NAME})
 install(TARGETS moveit_cmder DESTINATION lib/${PROJECT_NAME})
+install(TARGETS move_interface_test DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS  
   scripts/QuickTrajTest.py

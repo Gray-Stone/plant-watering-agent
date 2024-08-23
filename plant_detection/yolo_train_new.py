@@ -51,6 +51,10 @@ if __name__ == "__main__":
         save=True,
         save_period=5,
         plots = True,
+        scale=0.3,
+        degrees=70,
+        perspective= 0.0005,
+        auto_augment= "autoaugment",
     )
 
     # If I used     model = YOLO('yolov8n-seg.yaml'), then I can't save

@@ -100,7 +100,8 @@ def MakeCylinderMarker(id,
                        header,
                        color=COLOR_MSG_LIST_RGBW[1],
                        diameter=0.02,
-                       height=1.8) -> Marker:
+                       height=1.8,
+                       alpha = 0.9) -> Marker:
     m = Marker()
     m.header = header
     m.type = Marker.CYLINDER
@@ -108,6 +109,7 @@ def MakeCylinderMarker(id,
     m.pose.position = pos
     m.pose.position.z+=height/2
     m.color = color
+    m.color.a =alpha
     m.scale.x = diameter
     m.scale.y = diameter
     m.scale.z = height
@@ -134,12 +136,12 @@ class GoalMover(Node):
     PLANT_CLASS_ID = 0
     WATERING_AREA_CLASS_ID = 1
 
-    PIO_MARKER_ID = 99
+    POI_MARKER_ID = 99
     NAV_PLANED_LOC_MARKER_ID = 89
 
-    PLAN_DEST_CLEARANCE_RADIUS = 0.2
-    MAX_PLAN_OFFSET_RADIUS = 0.6 # arm length is 0.52
-    MIN_PLAN_OFFSET_RADIUS = 0.2 # We want to have some distance so arm could extend
+    PLAN_GOAL_CLEARANCE_RADIUS = 0.2
+    MAX_PLAN_OFFSET_RADIUS = 1.1 # arm length is 0.52
+    MIN_PLAN_OFFSET_RADIUS = 0.55 # We want to have some distance so arm could extend
     POT_TO_WATERING_DIS_THRESHOLD = 0.24
 
 
@@ -249,7 +251,7 @@ class GoalMover(Node):
                                                  1,
                                                  callback_group=self.data_update_cb_group)
         # self.map_subs = self.create_subscription(OccupancyGrid, "/local_costmap/costmap" , self.global_map_cb , 1)
-        self.known_obj_subs  = self.create_subscription(  KnownObjectList , known_object_topic , self.known_obj_cb , 1)
+        self.known_obj_subs  = self.create_subscription(  KnownObjectList , known_object_topic , self.known_obj_cb , 1 , callback_group=self.data_update_cb_group)
         self.js_sub = self.create_subscription(JointState,
                                                "joint_states",
                                                self.joint_state_cb,
@@ -400,7 +402,7 @@ class GoalMover(Node):
             return
         if self.pause_start_time is None:
             self.clear_marker(self.NAV_PLANED_LOC_MARKER_ID)
-            self.clear_marker(self.PIO_MARKER_ID)
+            self.clear_marker(self.POI_MARKER_ID)
             # We don't want to look down, so arm don't generated shadows.
 
             self.get_logger().info(f"switching to nav mode")
@@ -408,7 +410,7 @@ class GoalMover(Node):
             self.get_logger().info(f"ret from switch nav {ret} ")
 
             await self.move_single_joint("joint_head_tilt" , -0.25)
-            await self.camera_scan_around(pan_delta=3.0 ,tilt_delta=0.0 , velocity=0.2)
+            # await self.camera_scan_around(pan_delta=1.5 ,tilt_delta=0.0 , velocity=0.2)
 
             self.pause_start_time = time.time()
             return self.CmdStates.PAUSE_BEFORE_NEXT
@@ -436,6 +438,7 @@ class GoalMover(Node):
             # We've pick the plant, increment counter
             self.next_planning_object_idx +=1 # move on for next iteration
         elif len(self.skipped_pot_objects) >0:
+            self.warn(f"Out of new objects to check, Going back to previously skipped objects")
             obj = self.skipped_pot_objects.popleft()
         else:
             self.get_logger().warn(f"{len(self.known_obj_list.objects)} locations all visited!")
@@ -444,6 +447,12 @@ class GoalMover(Node):
         if obj.object_class != self.PLANT_CLASS_ID:
             self.get_logger().warn(f"Skipping Object typeof type {obj.object_class} ")
             return self.CmdStates.PLANT_SELECTION
+
+        self.warn(f"\n\n---------------------------------------- \n"
+        "Working on new plant"
+        f"id {obj.id}"
+        f"at {obj.space_loc}"
+        "= VV = VV = VV =")
 
         self.current_chasing_plant = obj
 
@@ -457,7 +466,7 @@ class GoalMover(Node):
         self.get_logger().warn(f"Handling Object at index {self.next_planning_object_idx}")
 
 
-        maybe_goal_pose = await self.plan_to_point(self.current_chasing_plant.space_loc  , self.min_plan_offset_radius, self.max_plan_offset_radius)
+        maybe_goal_pose = await self.plan_to_point(self.current_chasing_plant.space_loc  , self.MIN_PLAN_OFFSET_RADIUS, self.MAX_PLAN_OFFSET_RADIUS)
 
         if maybe_goal_pose is None:
             self.error(f"Cannot plan to current object id {self.current_chasing_plant.id} at {self.current_chasing_plant.space_loc}")
@@ -660,7 +669,7 @@ class GoalMover(Node):
         # Now turn the base back. to clear for lowering the arm
         await self.ResetCamera()
         await self.turn_info_plant_cmdvel(watering_loc ,offset= 0)
-        await self.move_single_joint("joint_lift" , 0.28,duration = 2.0 )
+        await self.lower_arm_to_nav()
 
         self.warn(f"Watered plant with id {self.current_chasing_plant.id} at {self.current_chasing_plant.space_loc}")
 
@@ -670,6 +679,10 @@ class GoalMover(Node):
 
 
         return self.CmdStates.PAUSE_BEFORE_NEXT
+
+    async def lower_arm_to_nav(self):
+        await self.move_single_joint("joint_lift" , 0.28,duration = 2.0 )
+
 
     async def plan_to_point(self,goal_point:PointStamped , min_proximity, max_proximity) -> Optional[PoseStamped]:
 
@@ -688,14 +701,14 @@ class GoalMover(Node):
         # every time the potential points are emptied, search radius increase and fill the list again.
         target_map_coord = self.map_helper.world_point_to_map(goal_point.point)
 
-        check_cell_rad = math.ceil(self.plan_dest_clearance_radius / self.map_helper.map_info.resolution)
+        check_cell_rad = math.ceil(self.PLAN_GOAL_CLEARANCE_RADIUS / self.map_helper.map_info.resolution)
         self.get_logger().info(f"Searching for plan-able grid-location with clearance of "
-        f"{self.plan_dest_clearance_radius} m / {check_cell_rad} grids")
+        f"{self.PLAN_GOAL_CLEARANCE_RADIUS} m / {check_cell_rad} grids")
 
         min_search_ring_grid_rad = min_proximity / self.map_helper.meter_per_cell
         max_search_ring_grid_rad = max_proximity / self.map_helper.meter_per_cell
         
-        for ring_grid_rad in range(min_search_ring_grid_rad , int(max_search_ring_grid_rad)+1 ):
+        for ring_grid_rad in range( int(min_search_ring_grid_rad) , int(max_search_ring_grid_rad)+1 ):
             for maybe_coord in self.map_helper.GetRing(target_map_coord, ring_grid_rad):
                 maybe_valid , checked_coords = self.map_helper.CheckEmptyCircle(maybe_coord , check_cell_rad)
                 debug_marker = self.map_helper.color_sphere_gen(checked_coords ,id = self.NAV_PLANED_LOC_MARKER_ID , color = COLOR_MSG_LIST_RGBW[1] )
@@ -708,7 +721,7 @@ class GoalMover(Node):
                     diff_y = goal_point.point.y - loc_y
                     heading_into_plant =math.atan2(diff_y, diff_x)
                     pose_goal = self.make_ComputePathToPose_goal(loc_x, loc_y , heading_into_plant)
-                    goal_marker = MakeCylinderMarker(id = self.PIO_MARKER_ID, pos= pose_goal.goal.pose.position , header=pose_goal.goal.header, height= goal_point.point.z *2)
+                    goal_marker = MakeCylinderMarker(id = self.POI_MARKER_ID, pos= pose_goal.goal.pose.position , header=pose_goal.goal.header, height= goal_point.point.z *2)
                     self.pub_marker(goal_marker)
 
                     self.get_logger().info(f"Try nav planning to {pose_goal.goal.pose.position}")
@@ -740,7 +753,7 @@ class GoalMover(Node):
 
         loc_base = self.get_point_in_frame(target_point, self.robot_baseframe)
         self.get_logger().info(f"Target's location in base frame is {loc_base}")
-        self.marker_pub.publish(MakeCylinderMarker(id=101 , pos=loc_base.point , header= loc_base.header,diameter=0.08))
+        self.marker_pub.publish(MakeCylinderMarker(id=self.POI_MARKER_ID , pos=loc_base.point , header= loc_base.header,diameter=0.08 , height=0.3 , alpha= 0.3))
 
         # Then we compute the angle for turning.
         base_diff_angle = math.atan2(loc_base.point.y , loc_base.point.x)
@@ -846,8 +859,8 @@ class GoalMover(Node):
         # pitch is abs mode.
 
         lift_delta = 0.1481
-        arm_delta = 0.043801
-        pitch_target = -0.50
+        arm_delta = 0.045801
+        pitch_target = -0.65
 
 
         time_delta = 2.0
@@ -962,6 +975,9 @@ class GoalMover(Node):
         await self.move_single_joint("joint_head_pan" , pan_left , velocity= velocity )
         await self.move_single_joint("joint_head_pan" , pan_right , velocity= velocity )
         await self.move_single_joint("joint_head_pan" , current_pan , velocity= velocity )
+
+        if tilt_delta < .05:
+            return 
         time.sleep(0.5)
         # tilt range 0.49 -2.02
         tilt_up = min ( current_tilt + tilt_delta , 0.45)
@@ -1162,7 +1178,7 @@ class GoalMover(Node):
     def clear_marker(self, marker_id):
         m = Marker()
         m.id = marker_id
-        m.action = Marker.DELETE
+        m.action = Marker.DELETEALL
         self.pub_marker(m)
 
 def main(args=None):

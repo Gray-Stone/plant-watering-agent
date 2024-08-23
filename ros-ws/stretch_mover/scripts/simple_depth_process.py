@@ -306,6 +306,8 @@ class DepthProcessor(Node):
 
         if len (self.known_object_list) ==0 :
             # Don't publish anything before we see something
+            # No need to clear live ones, those have a life span setting on it.
+            self.clear_marker(self.RECORDED_OBJECT_MARKER_ID)
             return
 
         visual_marker = Marker()
@@ -318,6 +320,15 @@ class DepthProcessor(Node):
         array = MarkerArray()
         array.markers.append(visual_marker)
         self.marker_array_pub.publish(array)
+
+
+    def clear_marker(self, marker_id):
+        m = Marker()
+        m.id = marker_id
+        m.action = Marker.DELETEALL
+        mr= MarkerArray()
+        mr.markers.append(m)
+        self.marker_array_pub.publish(mr)
 
 
 

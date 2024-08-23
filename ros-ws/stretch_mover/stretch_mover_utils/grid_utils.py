@@ -119,8 +119,10 @@ class OccupancyGridHelper():
         index = y * self.map_info.width + x
         return self.map.data[index]
 
-    def color_sphere_gen(self,map_locs:list[tuple[int,int]] , scale = 0.1 , id = 10 , color = None)->Marker:
+    def color_sphere_gen(self,map_locs:list[tuple[int,int]] , scale = None , id = 10 , color = None)->Marker:
         m = Marker()
+        if scale is None:
+            scale = self.meter_per_cell * 1.2 
         m.scale = Vector3(x=scale,y=scale,z=scale)
         m.type = Marker.SPHERE_LIST
         m.header = self.map.header

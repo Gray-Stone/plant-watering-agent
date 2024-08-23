@@ -45,6 +45,7 @@ class ObjectRecord():
     world_loc: PointStamped
     class_id: int
 
+    MERGE_DELAY = 4
     def TryMerge(self,new_point: Point , threshold: float , stamp: RosTime  ):
         # The order matter for later on adding half of delta
         dx = new_point.x - self.world_loc.point.x
@@ -54,9 +55,9 @@ class ObjectRecord():
         if distance < threshold:
             # Not just averaging between new and old. It's like a rolling average. 
             # the btm number is the size of rolling window.
-            self.world_loc.point.x += dx / 5
-            self.world_loc.point.y += dy / 5
-            self.world_loc.point.z += dz / 5
+            self.world_loc.point.x += dx / self.MERGE_DELAY
+            self.world_loc.point.y += dy / self.MERGE_DELAY
+            self.world_loc.point.z += dz / self.MERGE_DELAY
             self.world_loc.header.stamp = stamp
             return True
         return False
@@ -79,7 +80,7 @@ class DepthProcessor(Node):
 
         self.declare_parameter("min_depth_range", 0.3)
         self.declare_parameter("max_depth_range", 3.0)
-        self.declare_parameter("same_object_dis_threshold", 0.5)
+        self.declare_parameter("same_object_dis_threshold", 0.45)
         self.declare_parameter("marker_size", 0.1)
 
         self.declare_parameter("world_frame", "base_link")

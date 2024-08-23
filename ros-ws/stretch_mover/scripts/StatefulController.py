@@ -95,7 +95,6 @@ def MakeSphereMaker(id , pos: Point , header , color : ColorRGBA = ColorRGBA(r=1
     m.scale.z = 0.1
     return m
 
-
 def MakeCylinderMarker(id,
                        pos: Point,
                        header,
@@ -129,31 +128,32 @@ class ModeSwitchNode(Node):
 
 class GoalMover(Node):
 
-    PAUSE_DURATION = 2.0
+    PAUSE_DURATION = 3.0
     LIFT_VELOCITY_MAX = 0.14 # 0.15 from driver
 
     PLANT_CLASS_ID = 0
     WATERING_AREA_CLASS_ID = 1
 
-    POT_TO_WATERING_DIS_THRESHOLD = 0.24
-
     PIO_MARKER_ID = 99
+    NAV_PLANED_LOC_MARKER_ID = 89
 
+    PLAN_DEST_CLEARANCE_RADIUS = 0.2
+    MAX_PLAN_OFFSET_RADIUS = 0.6 # arm length is 0.52
+    MIN_PLAN_OFFSET_RADIUS = 0.2 # We want to have some distance so arm could extend
+    POT_TO_WATERING_DIS_THRESHOLD = 0.24
 
 
     class CmdStates(Enum):
         IDLE = enum.auto()
-
+        
+        # If all prefect, states should only linearly go down.
+        PAUSE_BEFORE_NEXT = enum.auto()
+        # If any of the following state failed, should jump to pause (instead of plant select for next plant)
         PLANT_SELECTION = enum.auto()
-
         NAV_PLANNING = enum.auto()
         MOVING = enum.auto()
-
         WATERING_AREA_FINDING = enum.auto()
-
-
         WATERING = enum.auto()
-        PAUSE = enum.auto()
 
 
     def pub_marker(self , m:Marker):
@@ -192,20 +192,19 @@ class GoalMover(Node):
         self.current_chasing_plant : KnownObject = None
         self.current_watering_obj: KnownObject = None
 
+
         # List of skipped pots
         self.skipped_pot_objects: deque[KnownObject] = deque()
 
-        self.successful_planned_pose: Pose = None
+        self.successful_planned_pose: PoseStamped = None
 
-        self.plan_dest_clearance_radius = 0.2
-        self.max_plan_offset_radius = 0.6 # arm length is 0.52
 
         self.state = self.CmdStates.IDLE
-        self.state_update(self.CmdStates.PLANT_SELECTION)
+        self.state_update(self.CmdStates.PAUSE_BEFORE_NEXT)
 
 
         # Time keeper for the pause state.
-        self.pause_start_time = time.time()
+        self.pause_start_time = None
 
         #### Publisher
         self.state_change_publisher = self.create_publisher(StringMsg , "move_plant_state_change" , 2)
@@ -260,8 +259,6 @@ class GoalMover(Node):
         self.create_timer(0.5,self.main_timer)
         self.get_logger().info("Node configured, timer created!")
 
-
-
     def global_map_cb(self,map_msg : OccupancyGrid):
         # print(f"\n\n ================== ")
         # print(f"Got map , header {map_msg.header} , info {map_msg.info}")
@@ -279,35 +276,32 @@ class GoalMover(Node):
         # This way traj generationg don't need to do special case for arm
         self.js_map['wrist_extension'] = self.get_wrist_extension_js()
 
-    def state_update(self , new_state:'CmdStates'):
+    def state_update(self , new_state:Optional[CmdStates]):
+        if new_state is None:
+            return
         if new_state == self.state:
             return
 
-        self.get_logger().warn(f"State changing from {self.state} to {new_state}")
+        self.get_logger().warn(f" ==== >>>>  State changing from {self.state} to {new_state}")
         self.state = new_state
         return
 
+
+    """####################### 
+    State machines ! 
+    ######################### 
+    """
+
     async def main_timer(self):
         # await self.debug_state()
-
-        if not self.StartupCheck():
-            return
 
         # This is the main logic.
         if self.state == self.CmdStates.IDLE:
             # Do nothing in idle state.
             return
 
-        elif self.state == self.CmdStates.PAUSE:
-            if self.pause_start_time is None:
-                self.pause_start_time = time.time()
-                return
-            if time.time() - self.pause_start_time > self.PAUSE_DURATION:
-                self.get_logger().info("Pause timed up")
-                self.state_update(self.CmdStates.PLANT_SELECTION)
-                self.pause_start_time = None
-            return
-
+        elif self.state == self.CmdStates.PAUSE_BEFORE_NEXT:
+            self.state_update(await self.pause_before_next_state())
         # TODO, maybe add a camera set, tilt of -0.7568123906306684 seems low and good for nav.
 
 
@@ -317,7 +311,6 @@ class GoalMover(Node):
 
         elif self.state == self.CmdStates.NAV_PLANNING:
             self.state_update(await self.nav_planning_state())
-            raise
 
         elif self.state == self.CmdStates.MOVING:
             self.state_update(await self.moving_state())
@@ -380,7 +373,6 @@ class GoalMover(Node):
         if ("joint_lift" not in self.js_map) or ("joint_wrist_yaw" not in self.js_map):
             self.get_logger().warn(f"Skipping cycle for no joint states")
             return False
-
         return True
 
     async def debug_state(self):
@@ -402,18 +394,44 @@ class GoalMover(Node):
         self.error(f"Cannot find the same object with existing id, given {object.id}")
         raise
 
+    async def pause_before_next_state(self):
+        if len(self.js_map) < 7:
+            # This is just launch, we at least want js to be updated 
+            return
+        if self.pause_start_time is None:
+            self.clear_marker(self.NAV_PLANED_LOC_MARKER_ID)
+            self.clear_marker(self.PIO_MARKER_ID)
+            # We don't want to look down, so arm don't generated shadows.
+
+            self.get_logger().info(f"switching to nav mode")
+            ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
+            self.get_logger().info(f"ret from switch nav {ret} ")
+
+            await self.move_single_joint("joint_head_tilt" , -0.25)
+            await self.camera_scan_around(pan_delta=3.0 ,tilt_delta=0.0 , velocity=0.2)
+
+            self.pause_start_time = time.time()
+            return self.CmdStates.PAUSE_BEFORE_NEXT
+
+        if (time.time() - self.pause_start_time) > self.PAUSE_DURATION:
+            self.get_logger().info("Pause timed up")
+            self.pause_start_time = None
+            return self.CmdStates.PLANT_SELECTION
+        return self.CmdStates.PAUSE_BEFORE_NEXT
 
 
     async def plant_selection_state(self):
         """Pick the object for next round of action to plan for.
 
         Returns:
-            
         """
+        if not self.StartupCheck():
+            return self.CmdStates.PAUSE_BEFORE_NEXT
+
+
         obj :KnownObject
         if self.next_planning_object_idx < len(self.known_obj_list.objects):
 
-            self.get_logger().warn(f"Handling Object at index {self.next_planning_object_idx}")
             obj :KnownObject = self.known_obj_list.objects[self.next_planning_object_idx]
             # We've pick the plant, increment counter
             self.next_planning_object_idx +=1 # move on for next iteration
@@ -436,23 +454,17 @@ class GoalMover(Node):
         if not self.StartupCheck():
             return self.CmdStates.NAV_PLANNING
 
-        object_world_loc = self.current_chasing_plant.space_loc
-        if object_world_loc.header.frame_id != self.map_helper.map.header.frame_id:
-            # TODO we just don't handle this at all
-            self.get_logger().error(
-                f"Target Loc frame {object_world_loc.header.frame_id} not in same frame as map {self.map_helper.map.header.frame_id}! "
-            )
-            raise ValueError(
-                f"Target Loc frame {object_world_loc.header.frame_id} not in same frame as map {self.map_helper.map.header.frame_id}! "
-            )
+        self.get_logger().warn(f"Handling Object at index {self.next_planning_object_idx}")
 
-        maybe_goal_pose = await self.plan_to_point(self.current_chasing_plant.space_loc)
 
-        if maybe_goal_pose:
-            self.error(f"Cannot plan to current object id {self.current_chasing_plant.id} at {object_world_loc}")
+        maybe_goal_pose = await self.plan_to_point(self.current_chasing_plant.space_loc  , self.min_plan_offset_radius, self.max_plan_offset_radius)
+
+        if maybe_goal_pose is None:
+            self.error(f"Cannot plan to current object id {self.current_chasing_plant.id} at {self.current_chasing_plant.space_loc}")
             self.skipped_pot_objects.append(self.current_chasing_plant)
-            return self.CmdStates.PLANT_SELECTION
+            return self.CmdStates.PAUSE_BEFORE_NEXT
 
+        self.successful_planned_pose = maybe_goal_pose
         self.get_logger().info(f"Recording with pose {self.successful_planned_pose}")
         
         # After planning move to executing
@@ -469,10 +481,8 @@ class GoalMover(Node):
         await self.ResetCamera()
 
         nav_goal = NavigateToPose.Goal()
-        nav_goal.pose.header.frame_id = self.world_frame
+        nav_goal.pose = self.successful_planned_pose
         nav_goal.pose.header.stamp = self.get_clock().now().to_msg()
-        nav_goal.pose.pose = self.successful_planned_pose
-        nav_goal.pose.pose = self.successful_planned_pose
         for i in range(3):
             result : NavigateToPose.Result
             status, result = await self.ActionSendAwait(
@@ -488,7 +498,7 @@ class GoalMover(Node):
         else:
             self.get_logger().error(f"Repeated Failure trying to nav to {nav_goal.pose.pose.position}")
             self.error("Going back and select next plant.")
-            return self.CmdStates.PLANT_SELECTION
+            return self.CmdStates.PAUSE_BEFORE_NEXT
 
         return self.CmdStates.WATERING_AREA_FINDING
 
@@ -509,34 +519,38 @@ class GoalMover(Node):
 
         search_trials = 0
         plant_object = self.current_chasing_plant
+        scan_velocity = 0.18
 
         while True:
             # Then find a close by watering area.
-            o:KnownObject
-            for o in self.known_obj_list.objects:
-                if o.object_class == self.WATERING_AREA_CLASS_ID:
+            potential_watering_obj:KnownObject
+            for potential_watering_obj in self.known_obj_list.objects:
+                if potential_watering_obj.object_class == self.WATERING_AREA_CLASS_ID:
                     # Watering object must be above the pot
-                    self.info(f"Comparing potential {o} \nto {plant_object}\n"
-                    f"distance {point_point_distanec(o.space_loc.point , plant_object.space_loc.point)}")
-                    if o.space_loc.point.z > plant_object.space_loc.point.z:
-                        if point_point_distanec(o.space_loc.point , plant_object.space_loc.point) < self.POT_TO_WATERING_DIS_THRESHOLD :
-                            self.current_watering_obj = o
-                            self.warn(f"Found matching watering area with id {o.id} at {o.space_loc.point}")
+                    z_diff = potential_watering_obj.space_loc.point.z - plant_object.space_loc.point.z
+                    self.info(f"Comparing potential {potential_watering_obj} \nto {plant_object}\n"
+                    f"distance {point_point_distanec(potential_watering_obj.space_loc.point , plant_object.space_loc.point)}\n"
+                    f"z_diff { z_diff}")
+                    if z_diff > -0.01 :
+                        if point_point_distanec(potential_watering_obj.space_loc.point , plant_object.space_loc.point) < self.POT_TO_WATERING_DIS_THRESHOLD :
+                            self.current_watering_obj = potential_watering_obj
+                            self.warn(f"Found matching watering area with id {potential_watering_obj.id} at {potential_watering_obj.space_loc.point}")
                             return self.CmdStates.WATERING
 
             # we have went through all current objects without finding anything.
             # Move head around and try more
-            if search_trials > 2:
+            if search_trials > 3:
                 self.error(f"Can not find a valid watering area to pot id {plant_object.id} at "
                            f"{plant_object.space_loc} \n"
                            "Re selecting plants")
-                return self.CmdStates.PLANT_SELECTION
+                return self.CmdStates.PAUSE_BEFORE_NEXT
 
             self.warn(f"Did not match any watering area, moving camera around more")
-            await self.camera_scan_around()
+            await self.camera_scan_around( velocity = scan_velocity)
             self.current_chasing_plant = self.refresh_object(self.current_chasing_plant)
             plant_object = self.current_chasing_plant
             search_trials +=1
+            scan_velocity = scan_velocity * 0.75
 
         return self.CmdStates.WATERING_AREA_FINDING
 
@@ -655,9 +669,9 @@ class GoalMover(Node):
 
 
 
-        return self.CmdStates.PLANT_SELECTION
+        return self.CmdStates.PAUSE_BEFORE_NEXT
 
-    async def plan_to_point(self,goal_point:PointStamped) -> Optional[PoseStamped]:
+    async def plan_to_point(self,goal_point:PointStamped , min_proximity, max_proximity) -> Optional[PoseStamped]:
 
         if goal_point.header.frame_id != self.map_helper.map_frame:
             self.warn(
@@ -675,16 +689,16 @@ class GoalMover(Node):
         target_map_coord = self.map_helper.world_point_to_map(goal_point.point)
 
         check_cell_rad = math.ceil(self.plan_dest_clearance_radius / self.map_helper.map_info.resolution)
-        self.get_logger().error(f"Searching for plan-able grid-location with clearance of "
+        self.get_logger().info(f"Searching for plan-able grid-location with clearance of "
         f"{self.plan_dest_clearance_radius} m / {check_cell_rad} grids")
 
-        min_search_ring_grid_rad = 0
-        max_search_ring_grid_rad = self.max_plan_offset_radius / self.map_helper.meter_per_cell
+        min_search_ring_grid_rad = min_proximity / self.map_helper.meter_per_cell
+        max_search_ring_grid_rad = max_proximity / self.map_helper.meter_per_cell
         
         for ring_grid_rad in range(min_search_ring_grid_rad , int(max_search_ring_grid_rad)+1 ):
             for maybe_coord in self.map_helper.GetRing(target_map_coord, ring_grid_rad):
                 maybe_valid , checked_coords = self.map_helper.CheckEmptyCircle(maybe_coord , check_cell_rad)
-                debug_marker = self.map_helper.color_sphere_gen(checked_coords ,id = 5 , color = COLOR_MSG_LIST_RGBW[1] )
+                debug_marker = self.map_helper.color_sphere_gen(checked_coords ,id = self.NAV_PLANED_LOC_MARKER_ID , color = COLOR_MSG_LIST_RGBW[1] )
                 self.pub_marker(debug_marker)
 
                 if maybe_valid:
@@ -917,7 +931,7 @@ class GoalMover(Node):
 
     async def ResetCamera(self):
         self.info("Resetting camera ")
-        await self.move_multi_joint(["joint_head_pan","joint_head_tilt"] , [0.0, -0.5])
+        await self.move_multi_joint(["joint_head_pan","joint_head_tilt"] , [0.0, -0.55])
 
     async def camera_look_at_object(self , loc_world):
         # link_head_pan
@@ -936,14 +950,14 @@ class GoalMover(Node):
 
         self.move_multi_joint(["joint_head_pan","joint_head_tilt"] , [0.0, -0.5])
 
-    async def camera_scan_around(self, pan_delta = 0.5 , tilt_delta = 0.4,  velocity = 0.15):
+    async def camera_scan_around(self, pan_delta = 0.5 , tilt_delta = 0.4,  velocity = 0.18):
         # Scan camera around current pointed location.
         # Pan scan
         self.info(f"Scanning camera around with pan detla {pan_delta} , tilt delta {tilt_delta}")
         current_pan = self.js_map["joint_head_pan"]
         current_tilt = self.js_map["joint_head_tilt"]
         # Pan range -4.04 1.73
-        pan_left = min ( current_pan + pan_delta , 1.7)
+        pan_left = min ( current_pan + pan_delta , 1.6)
         pan_right = max ( current_pan - pan_delta , -4.04)
         await self.move_single_joint("joint_head_pan" , pan_left , velocity= velocity )
         await self.move_single_joint("joint_head_pan" , pan_right , velocity= velocity )
@@ -955,7 +969,6 @@ class GoalMover(Node):
         await self.move_single_joint("joint_head_tilt" , tilt_up , velocity= velocity )
         await self.move_single_joint("joint_head_tilt" , tilt_down , velocity= velocity )
         await self.move_single_joint("joint_head_tilt" , current_tilt , velocity= velocity )
-
 
 
     def build_rot_traj(self ,target_angle : float , angular_vel = 0.2 , total_duration = None ) -> MultiDOFJointTrajectory:
@@ -1002,7 +1015,6 @@ class GoalMover(Node):
 
 
     async def move_single_joint(self,joint_name :str , target : float , duration = 1.0 , velocity = None, fail_able = False) -> bool:
-        self.info(f"moving {joint_name} to {target} over {duration}s")
         traj_goal = FollowJointTrajectory.Goal()
 
         # Add current location in
@@ -1010,7 +1022,15 @@ class GoalMover(Node):
 
         if velocity is None:
             velocity = (target -  self.js_map[joint_name]) / duration
+        else:
+            duration = abs((target -  self.js_map[joint_name]) / velocity)
 
+        if sign(velocity) != sign(target -  self.js_map[joint_name]):
+            velocity = -velocity
+
+        
+
+        self.info(f"moving {joint_name} to {target} over {duration}s")
         j_p = JointTrajectoryPoint()
         j_p.positions.append(self.js_map[joint_name])
         j_p.time_from_start = self.build_duration(0.0)
@@ -1037,7 +1057,7 @@ class GoalMover(Node):
 
             if not fail_able:
                 self.error(f"FAILED! {result} ")
-                raise
+                raise RuntimeError(f"Joint motion failed with {result} ")
             self.warn(f"FAILED! {result} ")
             return False
         return True
@@ -1138,6 +1158,12 @@ class GoalMover(Node):
 
     def get_wrist_extension_js(self):
         return self.js_map["joint_arm_l3"]+self.js_map["joint_arm_l2"]+self.js_map["joint_arm_l1"]+self.js_map["joint_arm_l0"]
+
+    def clear_marker(self, marker_id):
+        m = Marker()
+        m.id = marker_id
+        m.action = Marker.DELETE
+        self.pub_marker(m)
 
 def main(args=None):
     rclpy.init(args=args)

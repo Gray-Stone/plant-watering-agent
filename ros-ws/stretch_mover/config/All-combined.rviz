@@ -7,6 +7,7 @@ Panels:
         - /Global Options1
         - /rtabmap-cloud1
         - /Image1/Topic1
+        - /Localcostmap1
         - /MarkerArray1
       Splitter Ratio: 0.5
     Tree Height: 623
@@ -345,7 +346,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /cloud_map
+        Value: /octomap_obstacles
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
@@ -418,7 +419,7 @@ Visualization Manager:
         Value: /global_costmap/costmap_updates
       Use Timestamp: false
       Value: true
-    - Alpha: 0.5
+    - Alpha: 0.20000000298023224
       Class: rviz_default_plugins/Map
       Color Scheme: costmap
       Draw Behind: false
@@ -471,7 +472,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        "": true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -565,25 +566,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 2.90244197845459
+      Distance: 3.847869634628296
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.13669699430465698
-        Y: -0.45069119334220886
-        Z: 1.1389833688735962
+        X: 0.9032933712005615
+        Y: -0.16044734418392181
+        Z: 2.097545862197876
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.8433846235275269
+      Pitch: 0.7833846807479858
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 3.9427599906921387
+      Yaw: 2.9277544021606445
     Saved: ~
 Window Geometry:
   Camera:

@@ -107,6 +107,7 @@ def MakeCylinderMarker(id,
     m.type = Marker.CYLINDER
     m.id = id
     m.pose.position = pos
+    m.pose.position.z+=height/2
     m.color = color
     m.scale.x = diameter
     m.scale.y = diameter
@@ -129,13 +130,16 @@ class ModeSwitchNode(Node):
 class GoalMover(Node):
 
     PAUSE_DURATION = 2.0
-
     LIFT_VELOCITY_MAX = 0.14 # 0.15 from driver
 
     PLANT_CLASS_ID = 0
     WATERING_AREA_CLASS_ID = 1
 
-    POT_TO_WATERING_DIS_THRESHOLD = 0.2
+    POT_TO_WATERING_DIS_THRESHOLD = 0.24
+
+    PIO_MARKER_ID = 99
+
+
 
     class CmdStates(Enum):
         IDLE = enum.auto()
@@ -187,6 +191,9 @@ class GoalMover(Node):
         self.next_planning_object_idx = 0
         self.current_chasing_plant : KnownObject = None
         self.current_watering_obj: KnownObject = None
+
+        # List of skipped pots
+        self.skipped_pot_objects: deque[KnownObject] = deque()
 
         self.successful_planned_pose: Pose = None
 
@@ -310,6 +317,7 @@ class GoalMover(Node):
 
         elif self.state == self.CmdStates.NAV_PLANNING:
             self.state_update(await self.nav_planning_state())
+            raise
 
         elif self.state == self.CmdStates.MOVING:
             self.state_update(await self.moving_state())
@@ -343,7 +351,6 @@ class GoalMover(Node):
         # Must fill in the planner id, or it won't print the action failed reason.
         pose_goal.planner_id = "GridBased"
 
-        # TODO add orientation
         pose_goal.use_start = False
         return pose_goal
 
@@ -403,24 +410,24 @@ class GoalMover(Node):
         Returns:
             
         """
-        if self.next_planning_object_idx >= len(self.known_obj_list.objects):
+        obj :KnownObject
+        if self.next_planning_object_idx < len(self.known_obj_list.objects):
+
+            self.get_logger().warn(f"Handling Object at index {self.next_planning_object_idx}")
+            obj :KnownObject = self.known_obj_list.objects[self.next_planning_object_idx]
+            # We've pick the plant, increment counter
+            self.next_planning_object_idx +=1 # move on for next iteration
+        elif len(self.skipped_pot_objects) >0:
+            obj = self.skipped_pot_objects.popleft()
+        else:
             self.get_logger().warn(f"{len(self.known_obj_list.objects)} locations all visited!")
             return self.CmdStates.IDLE
-
-        self.get_logger().warn(f"Handling Object at index {self.next_planning_object_idx}")
-        obj :KnownObject = self.known_obj_list.objects[self.next_planning_object_idx]
-        # We've pick the plant, increment counter
-        self.next_planning_object_idx +=1 # Move on to the next one.
-
 
         if obj.object_class != self.PLANT_CLASS_ID:
             self.get_logger().warn(f"Skipping Object typeof type {obj.object_class} ")
             return self.CmdStates.PLANT_SELECTION
 
         self.current_chasing_plant = obj
-
-        # TODO We skip ARM_TURNING for now.
-        self.get_logger().warn(f"Skil to arm turning")
 
         return self.CmdStates.NAV_PLANNING
 
@@ -439,85 +446,15 @@ class GoalMover(Node):
                 f"Target Loc frame {object_world_loc.header.frame_id} not in same frame as map {self.map_helper.map.header.frame_id}! "
             )
 
+        maybe_goal_pose = await self.plan_to_point(self.current_chasing_plant.space_loc)
 
-        # Search go out as a circle.
-        # every time the potential points are emptied, search radius increase and fill the list again.
-        object_map_coord = self.map_helper.world_point_to_map(object_world_loc.point)
-        # planning_xy = (object_world_loc.point.x, object_world_loc.point.y)
-        potential_loc_xy = deque()
-        last_search_radius = 2 # integer unit in map grid number
-        while True:
-            # Need to add more search-able locations. We add a "ring" at a time.
-            if len(potential_loc_xy) ==0:
-                self.get_logger().warn(f"At search radius {last_search_radius} around {object_world_loc.point} Did not get valid goal")
-                last_search_radius += 1
+        if maybe_goal_pose:
+            self.error(f"Cannot plan to current object id {self.current_chasing_plant.id} at {object_world_loc}")
+            self.skipped_pot_objects.append(self.current_chasing_plant)
+            return self.CmdStates.PLANT_SELECTION
 
-                # A failure termination condition
-                if (last_search_radius * self.map_helper.map_info.resolution) > self.max_plan_offset_radius:
-                    self.get_logger().error(
-                        f"MAX Plan offset radius reached for {object_world_loc.point}\n"
-                        f"Last tried radius: cell: {last_search_radius} world: {last_search_radius * self.map_helper.map_info.resolution}")
-                    return self.CmdStates.PLANT_SELECTION
-
-                maybe_map_coords = self.map_helper.GetRing(
-                    object_map_coord, last_search_radius)
-
-                check_cell_rad = math.ceil(self.plan_dest_clearance_radius / self.map_helper.map_info.resolution)
-                self.get_logger().error(f"Clearance cell number {check_cell_rad}")
-
-                for coord in maybe_map_coords:
-
-                    maybe_valid , checked_coords = self.map_helper.CheckEmptyCircle(coord, check_cell_rad)
-                    # debug_marker = self.map_helper.color_sphere_gen(checked_coords ,id = 5 , color = COLOR_MSG_LIST_RGBW[1] )
-                    # print(f"checked_coords size {len(checked_coords)}")
-                    # self.pub_marker(debug_marker)
-                    if maybe_valid:
-                        potential_loc_xy.append( self.map_helper.map_loc_to_world(coord) )
-
-                self.get_logger().warn(f"Found {len(potential_loc_xy)} cells to check at ring of radius {last_search_radius}")
-                continue # Just in case we didn't add any valid cell
-            # Try to see if this location is plan-able by nav2.
-            planning_xy = potential_loc_xy.popleft()
-
-
-            # The loop is put into this order so planning_xy is pre-defined and fetch-able by outside.
-            loc_x, loc_y = planning_xy
-
-            # we also want a good orientation facing the plant. 
-            diff_x = object_world_loc.point.x - loc_x
-            diff_y = object_world_loc.point.y - loc_y
-            heading_into_plant =math.atan2(diff_y, diff_x)
-
-            pose_goal = self.make_ComputePathToPose_goal(loc_x, loc_y , heading_into_plant)
-            # pose_goal.goal.pose.position.z = loc.point.z
-
-            goal_marker = MakeCylinderMarker(id = 10, pos= pose_goal.goal.pose.position , header=pose_goal.goal.header, )
-            self.pub_marker(goal_marker)
-
-            self.get_logger().info(f"Sending goal at {pose_goal.goal.pose.position}")
-
-            result : ComputePathToPose.Result
-            status , result = await self.ActionSendAwait(pose_goal , self.compute_path_client)
-            if status != GoalStatus.STATUS_SUCCEEDED:
-                self.get_logger().warn(f"Did not get successful goal result, got {status}" )
-            else:
-                # This is the successful break condition.
-                break
-
-
-        # End of loop
-
-        near_end_pose_stamped:  PoseStamped = result.path.poses[-2]
-        self.successful_planned_pose = near_end_pose_stamped.pose
-        self.successful_planned_pose.position.x = planning_xy[0]
-        self.successful_planned_pose.position.y = planning_xy[1]
-
-        self.get_logger().info(f"Got a planned path to {planning_xy} , planning_time {result.planning_time} ")
         self.get_logger().info(f"Recording with pose {self.successful_planned_pose}")
-
-        # TODO record something for MOVING state to do.
-        # We actually just record this successful point and ask nav2 to replay.
-
+        
         # After planning move to executing
         return self.CmdStates.MOVING
 
@@ -715,14 +652,68 @@ class GoalMover(Node):
 
         # TODO remove his debug thing
         await self.switch_gamepad_service.call_async(TriggerSrv.Request())
-        
-        
+
+
 
         return self.CmdStates.PLANT_SELECTION
 
+    async def plan_to_point(self,goal_point:PointStamped) -> Optional[PoseStamped]:
+
+        if goal_point.header.frame_id != self.map_helper.map_frame:
+            self.warn(
+                f"Planning target have different frame then map ({goal_point.header.frame_id}),"
+                " Converting")
+            maybe_goal_point = self.try_transform(goal_point,self.map_helper.map_frame)
+            if maybe_goal_point is None:
+                self.warn(f"Cannot convert goal {goal_point} into map frame {self.map_helper.map_frame}")
+                return None
+            goal_point = maybe_goal_point
 
 
+        # Search go out as a circle.
+        # every time the potential points are emptied, search radius increase and fill the list again.
+        target_map_coord = self.map_helper.world_point_to_map(goal_point.point)
 
+        check_cell_rad = math.ceil(self.plan_dest_clearance_radius / self.map_helper.map_info.resolution)
+        self.get_logger().error(f"Searching for plan-able grid-location with clearance of "
+        f"{self.plan_dest_clearance_radius} m / {check_cell_rad} grids")
+
+        min_search_ring_grid_rad = 0
+        max_search_ring_grid_rad = self.max_plan_offset_radius / self.map_helper.meter_per_cell
+        
+        for ring_grid_rad in range(min_search_ring_grid_rad , int(max_search_ring_grid_rad)+1 ):
+            for maybe_coord in self.map_helper.GetRing(target_map_coord, ring_grid_rad):
+                maybe_valid , checked_coords = self.map_helper.CheckEmptyCircle(maybe_coord , check_cell_rad)
+                debug_marker = self.map_helper.color_sphere_gen(checked_coords ,id = 5 , color = COLOR_MSG_LIST_RGBW[1] )
+                self.pub_marker(debug_marker)
+
+                if maybe_valid:
+                    planning_xy = self.map_helper.map_loc_to_world(maybe_coord)
+                    loc_x, loc_y = planning_xy
+                    diff_x = goal_point.point.x - loc_x
+                    diff_y = goal_point.point.y - loc_y
+                    heading_into_plant =math.atan2(diff_y, diff_x)
+                    pose_goal = self.make_ComputePathToPose_goal(loc_x, loc_y , heading_into_plant)
+                    goal_marker = MakeCylinderMarker(id = self.PIO_MARKER_ID, pos= pose_goal.goal.pose.position , header=pose_goal.goal.header, height= goal_point.point.z *2)
+                    self.pub_marker(goal_marker)
+
+                    self.get_logger().info(f"Try nav planning to {pose_goal.goal.pose.position}")
+
+                    planning_result : ComputePathToPose.Result
+                    goal_status , planning_result = await self.ActionSendAwait(pose_goal , self.compute_path_client)
+                    if goal_status != GoalStatus.STATUS_SUCCEEDED:
+                        self.get_logger().warn(f"Did not get successful goal result, got {goal_status} with {planning_result}" )
+                    else:
+                        # This is the successful break condition.
+                                # Get back the pose we have successfully planned for
+                        self.get_logger().info(f"Got a planned path to {planning_xy} , planning_time {planning_result.planning_time} ")
+                        return pose_goal.goal
+
+                # Try again on next cell 
+        else: 
+            self.error(f"MAX Plan offset radius reached for {goal_point.point}\n"
+            f"Last tried radius: cell: {ring_grid_rad} world: {ring_grid_rad * self.map_helper.meter_per_cell}\n")
+            return None
 
 
     async def turn_info_plant_cmdvel(self,target_point : Point , offset =0 ):
@@ -1131,7 +1122,7 @@ class GoalMover(Node):
             return None
 
 
-    def try_transform(self,point_stamp : PointStamped , target_frame):
+    def try_transform(self,point_stamp : PointStamped , target_frame) -> Optional[PointStamped]:
 
 
         try:

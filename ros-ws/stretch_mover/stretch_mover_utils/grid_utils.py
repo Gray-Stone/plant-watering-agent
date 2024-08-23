@@ -21,6 +21,8 @@ class OccupancyGridHelper():
     def __init__(self , map_msg: OccupancyGrid ):
         self.map = map_msg
         self.map_info = map_msg.info
+        self.map_frame = self.map.header.frame_id
+        self.meter_per_cell = self.map_info.resolution
 
     def world_point_to_map(self , pose: Point):
         return self.world_loc_to_map( (pose.x,pose.y) ,)

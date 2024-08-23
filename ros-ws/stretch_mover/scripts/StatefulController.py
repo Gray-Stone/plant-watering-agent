@@ -139,7 +139,7 @@ class GoalMover(Node):
     POI_MARKER_ID = 99
     NAV_PLANED_LOC_MARKER_ID = 89
 
-    PLAN_GOAL_CLEARANCE_RADIUS = 0.2
+    PLAN_GOAL_CLEARANCE_RADIUS = 0.4
     MAX_PLAN_OFFSET_RADIUS = 1.1 # arm length is 0.52
     MIN_PLAN_OFFSET_RADIUS = 0.55 # We want to have some distance so arm could extend
     POT_TO_WATERING_DIS_THRESHOLD = 0.24
@@ -657,7 +657,7 @@ class GoalMover(Node):
         # Need two moves, one rise and pour, another one that goes back.
         await self.pour_water_action()
 
-
+        # TODO mark the PLANT when it is watered!
 
         time.sleep(2.0)
         self.warn("Retracting arm ! ")
@@ -858,9 +858,9 @@ class GoalMover(Node):
         pitch_init = 0.09
         # pitch is abs mode.
 
-        lift_delta = 0.1481
-        arm_delta = 0.045801
-        pitch_target = -0.65
+        lift_delta = 0.1881
+        arm_delta = 0.052801
+        pitch_target = -0.69
 
 
         time_delta = 2.0

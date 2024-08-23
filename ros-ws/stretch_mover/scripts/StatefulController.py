@@ -16,7 +16,7 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from builtin_interfaces.msg import Duration as DurationMsg
 from builtin_interfaces.msg import Time as RosTime
-from geometry_msgs.msg import Point, PointStamped, TransformStamped, Transform, Vector3 , PoseStamped, Pose
+from geometry_msgs.msg import Point, PointStamped, TransformStamped, Transform, Vector3 , PoseStamped, Pose , Twist
 from nav2_msgs.action import ComputePathToPose, FollowPath, NavigateToPose
 from nav_msgs.msg import MapMetaData, OccupancyGrid
 
@@ -53,7 +53,17 @@ from control_msgs.action import FollowJointTrajectory
 #     ColorRGBA(r=1.0,b=1.0,g=1.0,a=1.0),
 # ]
 
-def normaliz_angle (angle: float) -> float:
+def get_z_angle_to_point(point: Point):
+    return normalize_angle(math.atan2(point.y , point.x))
+
+def point_point_distanec(point1:Point,point2:Point):
+    return np.sqrt ((point1.x - point2.x)**2 + (point1.y - point2.y)**2 + (point1.z - point2.z)**2)
+
+
+def sign(num):
+    return -1 if num < 0 else 1
+
+def normalize_angle (angle: float) -> float:
 
 
     #   return rad - (std::ceil((rad + PI) / (2.0 * PI)) - 1.0) * 2.0 * PI;
@@ -103,29 +113,54 @@ def MakeCylinderMarker(id,
     m.scale.z = height
     return m
 
+
+class ModeSwitchNode(Node):
+
+    def __init__(self):
+        super().__init__("stretch_mode_switching")
+        self.service_client_cb_group = ReentrantCallbackGroup()
+
+        self.switch_nav_service = self.create_client(TriggerSrv,"switch_to_navigation_mode" ,callback_group=self.service_client_cb_group)
+        self.switch_pos_service = self.create_client(TriggerSrv,"switch_to_position_mode" ,callback_group=self.service_client_cb_group)
+        self.switch_traj_service = self.create_client(TriggerSrv,"switch_to_trajectory_mode" ,callback_group=self.service_client_cb_group)
+        self.switch_gamepad_service = self.create_client(TriggerSrv,"switch_to_gamepad_mode" ,callback_group=self.service_client_cb_group)
+
+
 class GoalMover(Node):
 
     PAUSE_DURATION = 2.0
+
+    LIFT_VELOCITY_MAX = 0.14 # 0.15 from driver
+
+    PLANT_CLASS_ID = 0
+    WATERING_AREA_CLASS_ID = 1
+
+    POT_TO_WATERING_DIS_THRESHOLD = 0.2
 
     class CmdStates(Enum):
         IDLE = enum.auto()
 
         PLANT_SELECTION = enum.auto()
 
-        PLANNING = enum.auto()
+        NAV_PLANNING = enum.auto()
         MOVING = enum.auto()
 
         WATERING_AREA_FINDING = enum.auto()
 
-        ARM_TURNING = enum.auto()
+
+        WATERING = enum.auto()
         PAUSE = enum.auto()
 
 
     def pub_marker(self , m:Marker):
         self.marker_pub.publish(m)
 
-    def __init__(self):
+    def __init__(self , mode_switch_node: ModeSwitchNode):
         super().__init__("move_to_plants")
+
+        self.info = self.get_logger().info
+        self.warn = self.get_logger().warn
+        self.error = self.get_logger().error
 
         #### Parameters
         self.declare_parameter("pot_class_id" , int(1))
@@ -150,12 +185,13 @@ class GoalMover(Node):
         self.known_obj_list: KnownObjectList = None
         self.js_map: dict[str,float] = {}
         self.next_planning_object_idx = 0
-        self.current_chasing_obj : KnownObject = None
+        self.current_chasing_plant : KnownObject = None
+        self.current_watering_obj: KnownObject = None
 
         self.successful_planned_pose: Pose = None
 
         self.plan_dest_clearance_radius = 0.2
-        self.max_plan_offset_radius = 0.7 # arm length is 0.52
+        self.max_plan_offset_radius = 0.6 # arm length is 0.52
 
         self.state = self.CmdStates.IDLE
         self.state_update(self.CmdStates.PLANT_SELECTION)
@@ -167,16 +203,18 @@ class GoalMover(Node):
         #### Publisher
         self.state_change_publisher = self.create_publisher(StringMsg , "move_plant_state_change" , 2)
         self.marker_pub = self.create_publisher(Marker, "VisualizationMarker" , 1)
+        self.cmd_vel_pub = self.create_publisher(Twist, "/stretch/cmd_vel" , 1)
 
         #### Service client
         # /switch_to_navigation_mode [std_srvs/srv/Trigger]
         # /switch_to_position_mode [std_srvs/srv/Trigger]
         # /switch_to_trajectory_mode [std_srvs/srv/Trigger]
-        self.service_client_cb_group = ReentrantCallbackGroup()
+        # self.service_client_cb_group = ReentrantCallbackGroup()
 
-        self.switch_nav_service = self.create_client(TriggerSrv,"switch_to_navigation_mode" ,callback_group=self.service_client_cb_group)
-        self.switch_pos_service = self.create_client(TriggerSrv,"switch_to_position_mode" ,callback_group=self.service_client_cb_group)
-        self.switch_traj_service = self.create_client(TriggerSrv,"switch_to_trajectory_mode" ,callback_group=self.service_client_cb_group)
+        self.switch_nav_service  = mode_switch_node.switch_nav_service
+        self.switch_pos_service  = mode_switch_node.switch_pos_service
+        self.switch_traj_service = mode_switch_node.switch_traj_service
+        self.switch_gamepad_service = mode_switch_node.switch_gamepad_service
 
         #### Action client
         action_cb_group = MutuallyExclusiveCallbackGroup()
@@ -198,11 +236,19 @@ class GoalMover(Node):
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
-
-        self.map_subs = self.create_subscription(OccupancyGrid, "/map" , self.global_map_cb , 1)
+        self.data_update_cb_group = ReentrantCallbackGroup()
+        self.map_subs = self.create_subscription(OccupancyGrid,
+                                                 "/map",
+                                                 self.global_map_cb,
+                                                 1,
+                                                 callback_group=self.data_update_cb_group)
         # self.map_subs = self.create_subscription(OccupancyGrid, "/local_costmap/costmap" , self.global_map_cb , 1)
         self.known_obj_subs  = self.create_subscription(  KnownObjectList , known_object_topic , self.known_obj_cb , 1)
-        self.js_sub = self.create_subscription(JointState , "joint_states" , self.joint_state_cb ,2)
+        self.js_sub = self.create_subscription(JointState,
+                                               "joint_states",
+                                               self.joint_state_cb,
+                                               2,
+                                               callback_group=self.data_update_cb_group)
         ## main timer
         self.create_timer(0.5,self.main_timer)
         self.get_logger().info("Node configured, timer created!")
@@ -221,9 +267,10 @@ class GoalMover(Node):
         self.known_obj_list = msg
 
     def joint_state_cb(self,msg:JointState):
-
         for name,val in zip(msg.name , msg.position):
             self.js_map[name] = val
+        # This way traj generationg don't need to do special case for arm
+        self.js_map['wrist_extension'] = self.get_wrist_extension_js()
 
     def state_update(self , new_state:'CmdStates'):
         if new_state == self.state:
@@ -234,6 +281,8 @@ class GoalMover(Node):
         return
 
     async def main_timer(self):
+        # await self.debug_state()
+
         if not self.StartupCheck():
             return
 
@@ -252,24 +301,31 @@ class GoalMover(Node):
                 self.pause_start_time = None
             return
 
+        # TODO, maybe add a camera set, tilt of -0.7568123906306684 seems low and good for nav.
+
+
         elif self.state == self.CmdStates.PLANT_SELECTION:
             self.state_update(await self.plant_selection_state())
 
 
-        elif self.state == self.CmdStates.PLANNING:
-            self.state_update(await self.planning_state())
+        elif self.state == self.CmdStates.NAV_PLANNING:
+            self.state_update(await self.nav_planning_state())
 
         elif self.state == self.CmdStates.MOVING:
             self.state_update(await self.moving_state())
-        elif self.state == self.CmdStates.ARM_TURNING:
-            self.state_update(await self.arm_pointing_state())
+
+        elif self.state == self.CmdStates.WATERING_AREA_FINDING:
+            self.state_update(await self.find_water_area_state())
+
+        elif self.state == self.CmdStates.WATERING:
+            self.state_update(await self.watering_state())
 
         else:
             self.get_logger().error(f"Stuck in non-existing state: {self.state}")
             raise RuntimeError(f"Stuck in non-existing state: {self.state}")
         # Reached here cuz state is just wrong !
 
-    def make_ComputePathToPose_goal(self , x,y):
+    def make_ComputePathToPose_goal(self , x,y , heading_z):
         pose_goal = ComputePathToPose.Goal()
         pose_goal.goal.header.frame_id = self.world_frame
         pose_goal.goal.header.stamp = self.get_clock().now().to_msg()
@@ -277,6 +333,13 @@ class GoalMover(Node):
         # we should be able to leave stamp empty.
         pose_goal.goal.pose.position.x = x
         pose_goal.goal.pose.position.y = y
+
+
+        q = tf_transformations.quaternion_from_euler(0,0,heading_z)
+        pose_goal.goal.pose.orientation.x = q[0]
+        pose_goal.goal.pose.orientation.y = q[1]
+        pose_goal.goal.pose.orientation.z = q[2]
+        pose_goal.goal.pose.orientation.w = q[3]
         # Must fill in the planner id, or it won't print the action failed reason.
         pose_goal.planner_id = "GridBased"
 
@@ -313,6 +376,27 @@ class GoalMover(Node):
 
         return True
 
+    async def debug_state(self):
+
+        await    self.pour_water_action()
+        raise
+
+    def refresh_object(self,object:KnownObject):
+
+        self.info(f"refreshing object's info for {object}")
+
+
+        o:KnownObject
+        for o in self.known_obj_list.objects:
+            if o.id == object.id:
+                self.info(f"refreshed object info is {o}")
+                return o
+
+        self.error(f"Cannot find the same object with existing id, given {object.id}")
+        raise
+
+
+
     async def plant_selection_state(self):
         """Pick the object for next round of action to plan for.
 
@@ -329,26 +413,23 @@ class GoalMover(Node):
         self.next_planning_object_idx +=1 # Move on to the next one.
 
 
-        if obj.object_class != 0:
+        if obj.object_class != self.PLANT_CLASS_ID:
             self.get_logger().warn(f"Skipping Object typeof type {obj.object_class} ")
             return self.CmdStates.PLANT_SELECTION
 
-        self.current_chasing_obj = obj
+        self.current_chasing_plant = obj
 
         # TODO We skip ARM_TURNING for now.
         self.get_logger().warn(f"Skil to arm turning")
 
-        return self.CmdStates.ARM_TURNING
+        return self.CmdStates.NAV_PLANNING
 
 
-    async def planning_state(self) -> CmdStates:
+    async def nav_planning_state(self) -> CmdStates:
         if not self.StartupCheck():
-            return self.CmdStates.PLANNING
+            return self.CmdStates.NAV_PLANNING
 
-
-
-
-        object_world_loc = self.current_chasing_obj.space_loc
+        object_world_loc = self.current_chasing_plant.space_loc
         if object_world_loc.header.frame_id != self.map_helper.map.header.frame_id:
             # TODO we just don't handle this at all
             self.get_logger().error(
@@ -364,7 +445,7 @@ class GoalMover(Node):
         object_map_coord = self.map_helper.world_point_to_map(object_world_loc.point)
         # planning_xy = (object_world_loc.point.x, object_world_loc.point.y)
         potential_loc_xy = deque()
-        last_search_radius = 0 # integer unit in map grid number
+        last_search_radius = 2 # integer unit in map grid number
         while True:
             # Need to add more search-able locations. We add a "ring" at a time.
             if len(potential_loc_xy) ==0:
@@ -401,7 +482,13 @@ class GoalMover(Node):
 
             # The loop is put into this order so planning_xy is pre-defined and fetch-able by outside.
             loc_x, loc_y = planning_xy
-            pose_goal = self.make_ComputePathToPose_goal(loc_x, loc_y)
+
+            # we also want a good orientation facing the plant. 
+            diff_x = object_world_loc.point.x - loc_x
+            diff_y = object_world_loc.point.y - loc_y
+            heading_into_plant =math.atan2(diff_y, diff_x)
+
+            pose_goal = self.make_ComputePathToPose_goal(loc_x, loc_y , heading_into_plant)
             # pose_goal.goal.pose.position.z = loc.point.z
 
             goal_marker = MakeCylinderMarker(id = 10, pos= pose_goal.goal.pose.position , header=pose_goal.goal.header, )
@@ -441,7 +528,8 @@ class GoalMover(Node):
         ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
         self.get_logger().info(f"ret from switch nav {ret} ")
 
-
+        # To ensure camera is looking where robot is going.
+        await self.ResetCamera()
 
         nav_goal = NavigateToPose.Goal()
         nav_goal.pose.header.frame_id = self.world_frame
@@ -462,152 +550,422 @@ class GoalMover(Node):
                 break
         else:
             self.get_logger().error(f"Repeated Failure trying to nav to {nav_goal.pose.pose.position}")
+            self.error("Going back and select next plant.")
+            return self.CmdStates.PLANT_SELECTION
 
-        return self.CmdStates.PAUSE
+        return self.CmdStates.WATERING_AREA_FINDING
 
-    async def arm_pointing_state(self) -> CmdStates:
+    async def find_water_area_state(self) -> CmdStates:
+
+        # First look at the plant's location.
+        self.get_logger().warn("switching to pos mode ")
+        ret = await self.switch_pos_service.call_async(TriggerSrv.Request())
+        self.get_logger().info(f"ret from switch pos {ret} ")
+
+        # we will basically only work on this coordinate from this point on.
+        loc_world = self.current_chasing_plant.space_loc
+
+        await self.camera_look_at_object(loc_world)
+        # await self.camera_scan_around()
+        time.sleep(1.0) # Give yolo time to update
+        self.current_chasing_plant = self.refresh_object(self.current_chasing_plant)
+
+        search_trials = 0
+        plant_object = self.current_chasing_plant
+
+        while True:
+            # Then find a close by watering area.
+            o:KnownObject
+            for o in self.known_obj_list.objects:
+                if o.object_class == self.WATERING_AREA_CLASS_ID:
+                    # Watering object must be above the pot
+                    self.info(f"Comparing potential {o} \nto {plant_object}\n"
+                    f"distance {point_point_distanec(o.space_loc.point , plant_object.space_loc.point)}")
+                    if o.space_loc.point.z > plant_object.space_loc.point.z:
+                        if point_point_distanec(o.space_loc.point , plant_object.space_loc.point) < self.POT_TO_WATERING_DIS_THRESHOLD :
+                            self.current_watering_obj = o
+                            self.warn(f"Found matching watering area with id {o.id} at {o.space_loc.point}")
+                            return self.CmdStates.WATERING
+
+            # we have went through all current objects without finding anything.
+            # Move head around and try more
+            if search_trials > 2:
+                self.error(f"Can not find a valid watering area to pot id {plant_object.id} at "
+                           f"{plant_object.space_loc} \n"
+                           "Re selecting plants")
+                return self.CmdStates.PLANT_SELECTION
+
+            self.warn(f"Did not match any watering area, moving camera around more")
+            await self.camera_scan_around()
+            self.current_chasing_plant = self.refresh_object(self.current_chasing_plant)
+            plant_object = self.current_chasing_plant
+            search_trials +=1
+
+        return self.CmdStates.WATERING_AREA_FINDING
+
+    async def watering_state(self) -> CmdStates:
         # TODO find the watering area in frame.
         # Just use the plant location for now.
+        self.get_logger().warn("switching to pos mode ")
+        ret = await self.switch_pos_service.call_async(TriggerSrv.Request())
+        self.get_logger().info(f"ret from switch pos {ret} ")
+
+        # we will basically only work on this coordinate from this point on.
+        watering_loc = self.current_watering_obj.space_loc
+
+        await self.camera_look_at_object(watering_loc)
+        time.sleep(1.0) # Give yolo time to update
+        self.current_watering_obj = self.refresh_object(self.current_watering_obj)
+        watering_loc = self.current_watering_obj.space_loc
+
+
+        # Make sure we centered the wrist
+        self.info(f"re-centering the wrist")
+        await self.move_multi_joint(
+            ["joint_wrist_yaw", "joint_wrist_pitch", "joint_wrist_roll"], [0, 0.1, 0], duration=1.0 , fail_able=True)
+
+        # And also retract the arm
+        if (self.get_wrist_extension_js() > 0.):
+            self.info(f"collapsing arm")
+            await self.move_multi_joint(
+                ["joint_arm_l3", "joint_arm_l2", "joint_arm_l1", "joint_arm_l0"], [0, 0, 0, 0],
+                duration=2.5,
+                fail_able=True)
+
+        # We first do a arm lift
+        # with the gripper flatten, rise the lift up to slightly above target height.
+        self.info(f"Lifting arm")
+        loc_in_ee = self.get_point_in_frame(watering_loc, self.ee_frame)
+        self.get_logger().info(f"current object loc in ee frame {loc_in_ee}")
+        # This does needs a little extra.
+        lift_amount = loc_in_ee.point.z + 0.03
+        await self.move_single_joint_delta( "joint_lift" , lift_amount , duration = lift_amount / self.LIFT_VELOCITY_MAX + 0.5)
+
+
+        # MOVE camera with the base turning.
+        await self.turn_info_plant_cmdvel(watering_loc , offset = math.pi/2)
+        self.get_logger().warn("switching to pos mode again")
+        # ret = await self.switch_traj_service.call_async(TriggerSrv.Request())
+        ret = await self.switch_pos_service.call_async(TriggerSrv.Request())
+        self.get_logger().info(f"ret from switch pos {ret} ")
+
+        await self.camera_look_at_object(watering_loc)
+        time.sleep(1.0) # Give yolo time to update
+        self.current_watering_obj = self.refresh_object(self.current_watering_obj)
+        watering_loc = self.current_watering_obj.space_loc
+
+
+
+        # Now we extend the arm to the plant.
+        self.info(f"Extending arm")
+        loc_in_ee = self.get_point_in_frame(watering_loc , self.ee_frame)
+
+        # Now we take out the x-component. as the arm delta.
+
+        if (loc_in_ee.point.x < 0.1) :
+            self.info(f"Arm already close enough to target.")
+        else:
+            # We don't do it all the way, leave a tiny tiny bit.
+            extension_delta = loc_in_ee.point.x - 0.08
+            self.info(f"extending arm for {extension_delta} amount")
+            if extension_delta > 0.52:
+                self.warn("arm extension value is too large, maybe should re-do moving?")
+            await self.move_single_joint_delta("wrist_extension" ,extension_delta  , duration=2.0)
+
+        # Final lineup using the wrist.
+        # The angle from wrist joint, into the plant is what's needed.
+
+        # Likely to be link_wrist_yaw
+
+        # link_wrist_yaw is pointing z down, and in urdf, the joint is     <axis xyz="0.0 0.0 -1.0"/>
+        # Need to flip the angle comming out here.
+
+
+
+        # loc_in_ee = self.get_point_in_ee(loc_world)
+        self.info("aiming wrist to target")
+        loc_in_wrist = self.get_point_in_frame(watering_loc, "link_wrist_yaw")
+
+        # Flip direction
+        wrist_yaw_angle = normalize_angle( - math.atan2(loc_in_wrist.point.y , loc_in_wrist.point.x) - math.pi/2)
+        self.info(f"Target in wrist frame at {loc_in_wrist} , calculated, flipped angle is {wrist_yaw_angle}")
+        await self.move_single_joint_delta("joint_wrist_yaw" , wrist_yaw_angle)
+
+        time.sleep(3.0)
+
+        self.info("!! pouring water !! ")
+        # Need two moves, one rise and pour, another one that goes back.
+        await self.pour_water_action()
+
+
+
+        time.sleep(2.0)
+        self.warn("Retracting arm ! ")
+
+        await self.move_single_joint("wrist_extension",0.001 , duration=2.0)
+
+
+        self.info(f"Turning the base back and lowering the lift.")
+        # Now turn the base back. to clear for lowering the arm
+        await self.ResetCamera()
+        await self.turn_info_plant_cmdvel(watering_loc ,offset= 0)
+        await self.move_single_joint("joint_lift" , 0.28,duration = 2.0 )
+
+        self.warn(f"Watered plant with id {self.current_chasing_plant.id} at {self.current_chasing_plant.space_loc}")
+
+        # TODO remove his debug thing
+        await self.switch_gamepad_service.call_async(TriggerSrv.Request())
+        
+        
+
+        return self.CmdStates.PLANT_SELECTION
+
+
+
+
+
+
+    async def turn_info_plant_cmdvel(self,target_point : Point , offset =0 ):
+
+        self.get_logger().warn("switching to nav mode ")
+
+        switch_mode_future =  self.switch_nav_service.call_async(TriggerSrv.Request())
+
+        self.info(f"Turning base to lineup arm")
+
+        loc_base = self.get_point_in_frame(target_point, self.robot_baseframe)
+        self.get_logger().info(f"Target's location in base frame is {loc_base}")
+        self.marker_pub.publish(MakeCylinderMarker(id=101 , pos=loc_base.point , header= loc_base.header,diameter=0.08))
+
+        # Then we compute the angle for turning.
+        base_diff_angle = math.atan2(loc_base.point.y , loc_base.point.x)
+        base_diff_offset_angle = normalize_angle(base_diff_angle + offset)
+        # base_diff_offset_angle *= 0.1 # First round, we expect the base to stuck for the first round, so only turn a little, so don't waste much time.
+        ret = await switch_mode_future
+        self.get_logger().info(f"switch pos RET {ret} ")
+        self.info(f"Initial angle offset: {base_diff_offset_angle}")
+
+
+        while abs(base_diff_offset_angle) > 0.03:
+
+            # let's do min 0.1 max 1.0
+            clamped_cmd_mag =max( min( abs(base_diff_offset_angle * 0.5 ) , 1.0) , 0.08)
+
+            cmd_twist = Twist()
+            cmd_twist.angular.z = clamped_cmd_mag * sign(base_diff_offset_angle)
+            self.info(f"amount to turn {base_diff_offset_angle} , z vel {cmd_twist.angular.z}")
+
+            self.cmd_vel_pub.publish(cmd_twist)
+
+            time.sleep(0.02)
+
+            loc_base = self.get_point_in_frame(target_point, self.robot_baseframe)
+
+            self.marker_pub.publish(MakeCylinderMarker(id=101 , pos=loc_base.point , header= loc_base.header,diameter=0.08))
+
+            base_diff_angle = math.atan2(loc_base.point.y , loc_base.point.x)
+            base_diff_offset_angle = normalize_angle(base_diff_angle + offset)
+
+
+        # Finish off with a 0 speed.
+        self.cmd_vel_pub.publish(Twist())
+
+
+
+    # async def turn_base_into_plant(self ,loc_world , offset = math.pi/2):
+    #     self.get_logger().warn("switching to traj mode ")
+
+    #     switch_mode_future =  self.switch_traj_service.call_async(TriggerSrv.Request())
+
+    #     self.info(f"Turning base to lineup arm")
+
+    #     loc_base = self.get_point_in_frame(loc_world, self.robot_baseframe)
+    #     self.get_logger().info(f"Target's location in base frame is {loc_base}")
+    #     self.marker_pub.publish(MakeCylinderMarker(id=101 , pos=loc_base.point , header= loc_base.header,diameter=0.08))
+
+    #     # Then we compute the angle for turning.
+    #     base_diff_angle = math.atan2(loc_base.point.y , loc_base.point.x)
+    #     base_diff_angle_offsetted = normalize_angle(base_diff_angle + offset)
+    #     # base_diff_angle_offsetted *= 0.1 # First round, we expect the base to stuck for the first round, so only turn a little, so don't waste much time.
+    #     ret = await switch_mode_future
+    #     self.get_logger().info(f"ret from switch pos {ret} ")
+
+    #     for i in range(6):
+    #         self.info(f"Trying for {i} th time")
+    #         self.get_logger().info(f"Target angle is {base_diff_angle_offsetted}")
+
+    #         # This is a special action sending, so not using the helpers here.
+    #         traj_goal = FollowJointTrajectory.Goal()
+    #         traj_goal.multi_dof_trajectory = self.build_rot_traj(base_diff_angle_offsetted)
+
+    #         result : FollowJointTrajectory.Result
+    #         status, result = await self.ActionSendAwait(
+    #             traj_goal,
+    #             self.trajectory_action_client,
+    #         )
+    #         if (result.error_code == FollowJointTrajectory.Result.SUCCESSFUL):
+    #             self.get_logger().info("Successful! ")
+    #         if status != GoalStatus.STATUS_SUCCEEDED:
+    #             self.get_logger().warn(f"Did not get successful goal result, got {status}" )
+
+    #         loc_base = self.get_point_in_frame(loc_world, self.robot_baseframe)
+    #         self.get_logger().info(f"Target's location in base frame is {loc_base}")
+    #         self.marker_pub.publish(MakeCylinderMarker(id=101 , pos=loc_base.point , header= Header(frame_id=self.robot_baseframe),diameter=0.08))
+
+    #         # Then we compute the angle for turning.
+    #         base_diff_angle = math.atan2(loc_base.point.y , loc_base.point.x)
+    #         base_diff_angle_offsetted = normalize_angle(base_diff_angle + offset)
+    #         if base_diff_angle_offsetted < 0.03:
+    #             self.get_logger().info(f"Arm is pointing roughly towards the plants.")
+    #             break
+
+    #     else:
+    #         self.get_logger().info(f"Failed to turn base into target heading.")
+    #         raise RuntimeError("Cannot Turn the base into watering area.")
+
+
+
+    async def pour_water_action(self):
+        # joint_wrist_pitch 0 -> -0.486
+        # Lift delta + 0.1581
+        # Arm + 0.043801334055
+
         self.get_logger().warn("switching to pos mode ")
         # ret = await self.switch_traj_service.call_async(TriggerSrv.Request())
         ret = await self.switch_pos_service.call_async(TriggerSrv.Request())
         self.get_logger().info(f"ret from switch pos {ret} ")
 
+        lift_init = self.js_map["joint_lift"]
+        arm_init = self.get_wrist_extension_js()
+        pitch_init = 0.09
+        # pitch is abs mode.
 
-        loc_world = self.current_chasing_obj.space_loc
+        lift_delta = 0.1481
+        arm_delta = 0.043801
+        pitch_target = -0.50
 
 
-        # Make sure we centered the wrist
+        time_delta = 2.0
+        current_time = 0.0
+        traj_goal = FollowJointTrajectory.Goal()
+        traj_goal.trajectory.joint_names = ["joint_lift", "wrist_extension" , "joint_wrist_pitch"]
 
-        status, result = await self.move_multi_joint(
-            ["joint_wrist_yaw", "joint_wrist_pitch", "joint_wrist_roll"], [0, 0, 0], duration=2.5)
+        current_time += 0.2
+        # Add current location in
+        # Don't give it the init move, some how the dynamixal is really bad at tiny moves
+        j_p = JointTrajectoryPoint()
+        j_p.positions = [lift_init, arm_init, self.js_map["joint_wrist_pitch"]]
+        # j_p.velocities = [0.0, 0.0, 0.1 / 0.2]
+        j_p.time_from_start = self.build_duration(current_time)
+        traj_goal.trajectory.points.append(j_p)
+
+        current_time += time_delta
+        j_p = JointTrajectoryPoint()
+        j_p.positions = [lift_init + lift_delta, arm_init + arm_delta, pitch_target]
+        j_p.velocities = [
+            lift_delta / time_delta,
+            arm_delta / time_delta,
+            pitch_target / time_delta,
+        ]
+        j_p.time_from_start = self.build_duration(current_time)
+        traj_goal.trajectory.points.append(j_p)
+
+
+        # Pause a little
+        # current_time += 0.5
+        # j_p.time_from_start = self.build_duration(current_time)
+        # traj_goal.trajectory.points.append(j_p)
+
+        # j_p = JointTrajectoryPoint()
+        # j_p.positions = [lift_init + lift_delta, arm_init + arm_delta, pitch_target-0.05]
+        # j_p.velocities = [0.1, 0.1, -0.05 / 0.5]
+        # j_p.time_from_start = self.build_duration(current_time)
+        # traj_goal.trajectory.points.append(j_p)
+
+        current_time += time_delta -0.1
+        # Add current location in
+        j_p = JointTrajectoryPoint()
+        j_p.positions = [lift_init, arm_init, pitch_init]
+        j_p.velocities = [
+            -lift_delta / time_delta,
+            -arm_delta / time_delta,
+            -pitch_target / time_delta,
+        ]
+        j_p.time_from_start = self.build_duration(current_time)
+        traj_goal.trajectory.points.append(j_p)
+
+
+        result: FollowJointTrajectory.Result
+        status, result = await self.ActionSendAwait(
+            traj_goal,
+            self.trajectory_action_client,
+        )
+        if status != GoalStatus.STATUS_SUCCEEDED:
+            self.warn(f"Did not get successful goal status, got {status}")
+
         if (result.error_code == FollowJointTrajectory.Result.SUCCESSFUL):
-            self.get_logger().info("Successful! ")
+            self.info("Successful! ")
         else:
-            self.get_logger().error(f"FAILED! {result} ")
-
-        # And also retract the arm
-
-        # We first do a arm lift
-        status, result = await self.move_multi_joint(
-            ["joint_arm_l3", "joint_arm_l2", "joint_arm_l1" ,"joint_arm_l0"], [0, 0,0,0], duration=2.5)
-
-        
-        # status, result = await self.move_single_joint(
-        #     "wrist_extension",0.05, duration=2.5)
-        if (result.error_code == FollowJointTrajectory.Result.SUCCESSFUL):
-            self.get_logger().info("Successful! ")
-        else:
-            self.get_logger().error(f"FAILED! {result} ")
+            self.error(f"FAILED! {result} ")
             raise
+        return True
 
-        # with the grap flatten, rise the lift up to slightly above target height.
-        
+
+
+    def get_point_in_frame(self, target_point , frame_name):
+        # Re compute the target location in robot's frame.
         for i in range(5):
-            loc_in_ee = self.try_transform(loc_world, self.ee_frame)
+            loc_in_ee = self.try_transform(target_point, frame_name)
             time.sleep(0.5)
             if loc_in_ee is not None:
-                break
+                return loc_in_ee
         else:
             self.get_logger().info(f"Time out getting transform")
-            raise
-        self.get_logger().info(f"Converted loc into ee frame {loc_in_ee}")
-
-        status, result = await self.move_single_joint_delta( "joint_lift" , loc_in_ee.point.z + 0.1 , duration = 2.0)
-
-        if (result.error_code == FollowJointTrajectory.Result.SUCCESSFUL):
-            self.get_logger().info("Successful! ")
-        else:
-            self.get_logger().error(f"FAILED! {result} ")
-            raise
+            raise RuntimeError(f"Timeout getting point {target_point} into frame {frame_name}")
 
 
+    async def ResetCamera(self):
+        self.info("Resetting camera ")
+        await self.move_multi_joint(["joint_head_pan","joint_head_tilt"] , [0.0, -0.5])
+
+    async def camera_look_at_object(self , loc_world):
+        # link_head_pan
+        loc_pan = self.get_point_in_frame(loc_world , "link_head_pan")
+        pan_angle = get_z_angle_to_point(loc_pan.point)
+        self.info(f"Turning camera to look at relative point {loc_pan} , computed angle {pan_angle}")
+        await self.move_single_joint_delta("joint_head_pan" , pan_angle)
+
+        loc_tilt = self.get_point_in_frame(loc_world , "link_head_tilt")
+        tilt_angle = get_z_angle_to_point(loc_tilt.point)
+        self.info(f"Turning camera to look at relative point {loc_tilt} , computed angle {tilt_angle}")
+        await self.move_single_joint_delta("joint_head_tilt" , tilt_angle)
 
 
+        # link_head_tilt
+
+        self.move_multi_joint(["joint_head_pan","joint_head_tilt"] , [0.0, -0.5])
+
+    async def camera_scan_around(self, pan_delta = 0.5 , tilt_delta = 0.4,  velocity = 0.15):
+        # Scan camera around current pointed location.
+        # Pan scan
+        self.info(f"Scanning camera around with pan detla {pan_delta} , tilt delta {tilt_delta}")
+        current_pan = self.js_map["joint_head_pan"]
+        current_tilt = self.js_map["joint_head_tilt"]
+        # Pan range -4.04 1.73
+        pan_left = min ( current_pan + pan_delta , 1.7)
+        pan_right = max ( current_pan - pan_delta , -4.04)
+        await self.move_single_joint("joint_head_pan" , pan_left , velocity= velocity )
+        await self.move_single_joint("joint_head_pan" , pan_right , velocity= velocity )
+        await self.move_single_joint("joint_head_pan" , current_pan , velocity= velocity )
+        time.sleep(0.5)
+        # tilt range 0.49 -2.02
+        tilt_up = min ( current_tilt + tilt_delta , 0.45)
+        tilt_down = max ( current_tilt - tilt_delta , -1.8)
+        await self.move_single_joint("joint_head_tilt" , tilt_up , velocity= velocity )
+        await self.move_single_joint("joint_head_tilt" , tilt_down , velocity= velocity )
+        await self.move_single_joint("joint_head_tilt" , current_tilt , velocity= velocity )
 
 
-        
-
-        # T_world_base = self._tf_buffer.lookup_transform(self.robot_baseframe, self.world_frame,timeout= Duration(sec=1.0) )
-        # Ros tf bug?
-        #   File "/opt/ros/humble/lib/python3.10/site-packages/tf2_ros/buffer.py", line 220, in can_transform
-        #     while (clock.now() < start_time + timeout and
-        # TypeError: unsupported operand type(s) for +: 'Time' and 'Duration'
-
-        # loc_base = self._tf_buffer.transform(loc_world, self.world_frame,timeout= Duration(sec=1))
-
-
-
-
-        # # Dummy move to set motor in right state
-        # traj_goal = FollowJointTrajectory.Goal()
-        # traj_goal.multi_dof_trajectory = self.build_rot_traj(0.2 , total_duration= 0.7)
-        # result : FollowJointTrajectory.Result
-        # status, result = await self.ActionSendAwait(
-        #     traj_goal,
-        #     self.trajectory_action_client,
-        # )
-
-        # loc_base = self._tf_buffer.transform(loc_world, self.robot_baseframe)
-        for i in range(5):
-            loc_in_ee = self.try_transform_tf(loc_world, self.ee_frame)
-            time.sleep(0.5)
-            if loc_in_ee is not None:
-                break
-        else:
-            self.get_logger().info(f"Time out getting transform")
-            raise
-        self.get_logger().info(f"Converted loc into ee frame {loc_in_ee}")
-
-
-        self.get_logger().info(f"Target's location in base frame is {loc_base}")
-        self.marker_pub.publish(MakeCylinderMarker(id=101 , pos=loc_base.point , header= Header(frame_id=self.robot_baseframe),diameter=0.08))
-
-        # Then we compute the angle for turning.
-        base_diff_angle = math.atan2(loc_base.point.y , loc_base.point.x)
-        base_diff_angle_90 = normaliz_angle(base_diff_angle + math.pi/2)
-
-        for i in range(5):
-
-
-            self.get_logger().info(f"Base turning angle is {base_diff_angle}")
-
-            traj_goal = FollowJointTrajectory.Goal()
-            traj_goal.multi_dof_trajectory = self.build_rot_traj(base_diff_angle_90)
-
-            result : FollowJointTrajectory.Result
-            status, result = await self.ActionSendAwait(
-                traj_goal,
-                self.trajectory_action_client,
-            )
-            self.get_logger().info(f"Result code: {result.error_code} , Result string: {result.error_string}")
-            if (result.error_code == FollowJointTrajectory.Result.SUCCESSFUL):
-                self.get_logger().info("Successful! ")
-
-            if status != GoalStatus.STATUS_SUCCEEDED:
-                self.get_logger().warn(f"Did not get successful goal result, got {status}" )
-
-            loc_base = self._tf_buffer.transform(loc_world, self.world_frame)
-            self.get_logger().info(f"Target's location in base frame is {loc_base}")
-            self.marker_pub.publish(MakeCylinderMarker(id=101 , pos=loc_base.point , header= Header(frame_id=self.robot_baseframe),diameter=0.08))
-
-
-            # Then we compute the angle for turning.
-            base_diff_angle = math.atan2(loc_base.point.y , loc_base.point.x)
-            base_diff_angle_90 = normaliz_angle(base_diff_angle + math.pi/2)
-
-            if base_diff_angle_90 < 0.01:
-                self.get_logger().info(f"Arm is pointing roughly towards the plants.")
-                break
-        else:
-            self.get_logger().info(f"Failed to turn base into target heading.")
-            raise
-
-
-
-
-
-        return self.CmdStates.PLANT_SELECTION
 
     def build_rot_traj(self ,target_angle : float , angular_vel = 0.2 , total_duration = None ) -> MultiDOFJointTrajectory:
 
@@ -637,6 +995,7 @@ class GoalMover(Node):
 
     def build_duration(self,sec:float) ->DurationMsg:
         return DurationMsg(sec = int(sec) ,nanosec = int((sec%1) * 1e9 ) )
+
     def build_turning_tf(self,angle)->Transform:
         goal_tf = Transform()
         q = tf_transformations.quaternion_from_euler(0,0,angle)
@@ -646,22 +1005,20 @@ class GoalMover(Node):
         goal_tf.rotation.w = q[3]
         return goal_tf
 
-    async def move_single_joint_delta(self , joint_name :str , delta : float , duration = 1.0):
+    async def move_single_joint_delta(self , joint_name :str , delta : float , duration = 1.0 , fail_able = False) -> bool:
         actual_target = self.js_map[joint_name] + delta
-        return await self.move_single_joint(joint_name , actual_target, duration = 1.0)
+        return await self.move_single_joint(joint_name , actual_target, duration , fail_able=fail_able)
 
 
-    async def move_single_joint(self,joint_name :str , target : float , duration = 1.0):
-
+    async def move_single_joint(self,joint_name :str , target : float , duration = 1.0 , velocity = None, fail_able = False) -> bool:
+        self.info(f"moving {joint_name} to {target} over {duration}s")
         traj_goal = FollowJointTrajectory.Goal()
 
         # Add current location in
         traj_goal.trajectory.joint_names.append(joint_name)
 
-        # if joint_name == "wrist_extension":
-        #     current_joint_value = self.get_wrist_extension_js()
-
-
+        if velocity is None:
+            velocity = (target -  self.js_map[joint_name]) / duration
 
         j_p = JointTrajectoryPoint()
         j_p.positions.append(self.js_map[joint_name])
@@ -670,6 +1027,7 @@ class GoalMover(Node):
 
         j_p = JointTrajectoryPoint()
         j_p.positions.append(target)
+        j_p.velocities.append(velocity)
         j_p.time_from_start = self.build_duration(duration)
         traj_goal.trajectory.points.append(j_p)
 
@@ -679,14 +1037,29 @@ class GoalMover(Node):
             traj_goal,
             self.trajectory_action_client,
         )
-        self.get_logger().info(
-            f"Result code: {result.error_code} , Result string: {result.error_string}")
         if status != GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().warn(f"Did not get successful goal result, got {status}")
+            self.warn(f"Did not get successful goal status, got {status}")
 
-        return status,result
+        if (result.error_code == FollowJointTrajectory.Result.SUCCESSFUL):
+            self.info("Successful! ")
+        else:
 
-    async def move_multi_joint(self,joint_names :str , targets : float , duration = 1.0):
+            if not fail_able:
+                self.error(f"FAILED! {result} ")
+                raise
+            self.warn(f"FAILED! {result} ")
+            return False
+        return True
+
+
+    async def move_multi_joint_delta( self,joint_names :str , delta_targets : float , duration = 1.0 , fail_able = False)->bool:
+        target_list = []
+        for name, delta in zip(joint_names , delta_targets):
+            target_list.append(self.js_map[name] + delta)
+        return await self.move_multi_joint(joint_names , target_list , duration , fail_able)
+
+    async def move_multi_joint(self,joint_names :str , targets : float , duration = 1.0 , fail_able = False)->bool:
+        self.info(f"moving \n{joint_names} to \n{targets} over {duration}s")
 
         traj_goal = FollowJointTrajectory.Goal()
 
@@ -695,10 +1068,8 @@ class GoalMover(Node):
         for n in joint_names:
             traj_goal.trajectory.joint_names.append(n)
             j_p.positions.append(self.js_map[n])
-
         j_p.time_from_start = self.build_duration(0.0)
         traj_goal.trajectory.points.append(j_p)
-
 
         j_p = JointTrajectoryPoint()
         for t in targets:
@@ -712,56 +1083,64 @@ class GoalMover(Node):
             traj_goal,
             self.trajectory_action_client,
         )
-        self.get_logger().info(
-            f"Result code: {result.error_code} , Result string: {result.error_string}")
         if status != GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().warn(f"Did not get successful goal result, got {status}")
+            self.warn(f"Did not get successful goal status, got {status}")
 
-        return status,result
+        if (result.error_code == FollowJointTrajectory.Result.SUCCESSFUL):
+            self.info("Successful! ")
+        else:
+
+            if not fail_able:
+                self.error(f"FAILED! {result} ")
+                raise RuntimeError(f"Failed to execute trajectory! ")
+            self.warn(f"FAILED! {result} ")
+            return False
+        return True
 
     def apply_transform(self,point:PointStamped, transform:TransformStamped):
         # Extract the translation from the Transform message
         translation = np.array([transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z])
-        
+
         # Extract the rotation (quaternion) from the Transform message
         rotation = [transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z, transform.transform.rotation.w]
-        
+
         # Convert the point to a numpy array
         point_vector = np.array([point.point.x, point.point.y, point.point.z])
-        
+
         # Rotate the point using the quaternion
         rotated_point = tf_transformations.quaternion_matrix(rotation)[:3, :3].dot(point_vector)
-        
+
         # Apply the translation
         transformed_point = rotated_point + translation
-        
+
         # Create a new Point object with the transformed coordinates
         transformed_point_msg = PointStamped()
         transformed_point_msg.header = transform.header
         transformed_point_msg.point.x = transformed_point[0]
         transformed_point_msg.point.y = transformed_point[1]
         transformed_point_msg.point.z = transformed_point[2]
-        
+
         return transformed_point_msg
+
 
     def try_transform_tf(self,point_stamp : PointStamped , target_frame):
         try:
             return self._tf_buffer.transform(point_stamp , target_frame)
-        except () as ex:
+        except Exception as ex:
             self.get_logger().warn(f"failed to get transform, {ex}")
             return None
 
 
     def try_transform(self,point_stamp : PointStamped , target_frame):
-        
-        
+
+
         try:
             tf = self._tf_buffer.lookup_transform(
                 target_frame=target_frame,
                 source_frame=point_stamp.header.frame_id,
                 time=rclpy.time.Time())
             return self.apply_transform(point_stamp , tf)
-        except () as ex:
+        except Exception as ex:
             self.get_logger().warn(f"failed to get transform, {ex}")
             return None
 
@@ -773,8 +1152,10 @@ def main(args=None):
     rclpy.init(args=args)
 
     try:
-        node = GoalMover()
+        mode_swtich_node = ModeSwitchNode()
+        node = GoalMover(mode_swtich_node)
         exec = MultiThreadedExecutor(5)
+        exec.add_node(mode_swtich_node)
         exec.add_node(node)
         exec.spin()
         # rclpy.spin(node)

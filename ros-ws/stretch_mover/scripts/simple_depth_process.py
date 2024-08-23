@@ -79,7 +79,7 @@ class DepthProcessor(Node):
 
         self.declare_parameter("min_depth_range", 0.3)
         self.declare_parameter("max_depth_range", 3.0)
-        self.declare_parameter("same_object_dis_threshold", 0.3)
+        self.declare_parameter("same_object_dis_threshold", 0.5)
         self.declare_parameter("marker_size", 0.1)
 
         self.declare_parameter("world_frame", "base_link")

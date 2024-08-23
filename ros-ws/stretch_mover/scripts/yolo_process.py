@@ -89,6 +89,7 @@ class TrackerNode(Node):
 
         self.results_pub = self.create_publisher(YoloDetectionList, yolo_result_topic, 1)
         self.result_image_pub = self.create_publisher(Image, result_image_topic, 1)
+        self.result_image_turned_pub = self.create_publisher(Image, "result_image_turned", 1)
         self.on_off_server = self.create_service(SetBool,"yolo_on_off" , self.yolo_onoff_cb)
         if self.debug: 
             self.mask_debug_pub = self.create_publisher(Image,"/camera/color/combined_mask_debug" , 1)
@@ -119,7 +120,7 @@ class TrackerNode(Node):
         )
         tracker = self.get_parameter("tracker").get_parameter_value().string_value
         device = self.get_parameter("device").get_parameter_value().string_value or None
-        results = self.model.track(
+        results = list(self.model.predict(
             source=rot_cv_image,
             conf=conf_thres,
             iou=iou_thres,
@@ -129,13 +130,15 @@ class TrackerNode(Node):
             device=device,
             verbose=False,
             retina_masks=True,
-        )
+            stream=True
+        ))
 
         if results is not None:
             # Publish this regardless?
-            yolo_result_image_msg = self.create_result_image(results , cv2.ROTATE_90_COUNTERCLOCKWISE)
+            # yolo_result_image_msg = self.create_result_image(results , cv2.ROTATE_90_COUNTERCLOCKWISE)
+            yolo_result_image_msg = self.create_result_image(results)
             yolo_result_image_msg.header = msg.header
-            self.result_image_pub.publish(yolo_result_image_msg)
+            self.result_image_turned_pub.publish(yolo_result_image_msg)
 
             detection_msg = self.create_detections_array(results , msg.header , cv2.ROTATE_90_COUNTERCLOCKWISE)
             if detection_msg is None:
@@ -225,7 +228,8 @@ class TrackerNode(Node):
             labels=result_labels,
             boxes=result_boxes,
         )                
-        plotted_image = cv2.rotate(plotted_image,rotateCode=rotate)
+        if rotate:
+            plotted_image = cv2.rotate(plotted_image,rotateCode=rotate)
 
         result_image_msg = self.bridge.cv2_to_imgmsg(plotted_image, encoding="bgr8")
         return result_image_msg

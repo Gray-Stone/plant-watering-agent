@@ -18,7 +18,7 @@ def generate_launch_description():
         'input_topic': '/camera/color/image_raw',
         'aligned_depth_topic': '/camera/aligned_depth_to_color/image_raw',
         'camera_info_topic': '/camera/color/camera_info',
-        "conf_thres": 0.4,
+        "conf_thres": 0.5,
 
         'yolo_model': model_path,
         'yolo_result_topic': '/yolo_ros/detections',

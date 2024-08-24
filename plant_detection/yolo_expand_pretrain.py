@@ -20,6 +20,7 @@ if __name__ == "__main__":
     parser.add_argument("--proj" , type=str , help="project name" ,default="train-cont")
     parser.add_argument("--name" , type=str , help="instance name" ,)
     parser.add_argument("-e" , "--epoch" , type=int , help="number of epoch to train" ,default="100")
+    parser.add_argument("--device" , help="yolo device argument" ,default="0")
 
 
     args = parser.parse_args()
@@ -48,7 +49,7 @@ if __name__ == "__main__":
         project=args.proj,
         name=args.name,
 
-        # WTF is this ? 
+        device = args.device,
         pretrained = False,
         save=True,
         save_period=5,

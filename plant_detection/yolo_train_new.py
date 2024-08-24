@@ -21,6 +21,7 @@ if __name__ == "__main__":
     parser.add_argument("--name" , type=str , help="instance name" ,)
     parser.add_argument("-e" , "--epoch" , type=int , help="number of epoch to train" ,default="100")
     parser.add_argument("--seg" , action="store_true" , help="do segmentation when set" ,default=False)
+    parser.add_argument("--device" , help="yolo device argument" ,default="0")
 
 
     args = parser.parse_args()
@@ -47,6 +48,7 @@ if __name__ == "__main__":
         epochs=args.epoch,
         project=args.proj,
         name=args.name,
+        device = args.device,
         pretrained = True,
         save=True,
         save_period=5,

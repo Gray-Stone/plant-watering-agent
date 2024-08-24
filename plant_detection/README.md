@@ -62,3 +62,9 @@ Here is an example. Output dataset from CVAT for watering area is already conver
 ```
 coco2yolo-seg/COCO2YOLO-merge.py Datas/open-images_7/Open_Images_7/labels.json Datas/open-images_7/cvat-Watering-area/YOLO/dataset.yaml
 ```
+
+### Using the merged subset
+
+There are two ways of using the subset: 
+
+Use a pre-trained pot only weights and continue training, or directly train a new one with it.

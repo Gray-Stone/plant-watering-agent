@@ -19,6 +19,8 @@ if __name__ == "__main__":
     parser.add_argument("data_yaml" , type=pathlib.Path ,help="path to Yolo yaml file")
     parser.add_argument("--proj" , type=str , help="project name" ,default="train-cont")
     parser.add_argument("--name" , type=str , help="instance name" ,)
+    parser.add_argument("-e" , "--epoch" , type=int , help="number of epoch to train" ,default="100")
+
 
     args = parser.parse_args()
     data_yaml_path : pathlib.Path = args.data_yaml
@@ -42,7 +44,7 @@ if __name__ == "__main__":
     # https://docs.ultralytics.com/reference/engine/model/#ultralytics.engine.model.Model.train
     model.train(
         data=data_yaml_path.resolve(),
-        epochs=300,
+        epochs=args.epoch,
         project=args.proj,
         name=args.name,
 
@@ -51,6 +53,11 @@ if __name__ == "__main__":
         save=True,
         save_period=5,
         plots = True,
+        scale=0.3,
+        degrees=70,
+        perspective= 0.0005,
+        auto_augment= "autoaugment",
+
     )
 
     list_model_classes(model)

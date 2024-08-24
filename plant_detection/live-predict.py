@@ -28,7 +28,7 @@ class ObjectInfo():
 class Detector():
     def __init__(self , model) -> None:
         self.model = model
-        self.color_list :list[tuple] = [(30,30,255),(30,255,30),(255,30,30)]
+        self.color_list :list[tuple] = [(30,255,30),(255,30,30),(30,30,255)]
         # Helper used for plotting.
         self._last_frame_size = None
         self._blank_color_frames = []
@@ -145,10 +145,12 @@ class Detector():
 
 if __name__ == "__main__":
 
+    
     # Let user
     parser = argparse.ArgumentParser()
     # parser.add_argument("target_img_dir" , type=pathlib.Path ,help="path to Yolo yaml file")
     parser.add_argument("model", type=str ,help="model-file")
+    parser.add_argument("--window-name", type=str ,help="window_name")
     parser.add_argument("--image" , help="Use image instead of cv" , default=None)
     args = parser.parse_args()
 
@@ -160,10 +162,13 @@ if __name__ == "__main__":
         cap = cv2.VideoCapture(6)
         if not cap.isOpened():
             raise IOError("Cannot open webcam")
+    window_name = args.window_name 
+    if window_name is None:
+        window_name = "labeled_image"
 
-    cv2.namedWindow("input" , cv2.WINDOW_NORMAL)
-    cv2.namedWindow("labeled_image" , cv2.WINDOW_NORMAL)
-    cv2.namedWindow("debug" , cv2.WINDOW_NORMAL)
+    # cv2.namedWindow("input" , cv2.WINDOW_NORMAL)
+    cv2.namedWindow(window_name , cv2.WINDOW_NORMAL)
+    # cv2.namedWindow("debug" , cv2.WINDOW_NORMAL)
     # cv2.namedWindow("mask" , cv2.WINDOW_NORMAL)
 
     model = YOLO(args.model)
@@ -195,8 +200,8 @@ if __name__ == "__main__":
             cv2.drawContours(frame,contours , 0,color=detector.color_list[obj_info.cls])
 
 
-        cv2.imshow("input" , frame)
-        cv2.imshow('labeled_image', labeled_frame)
+        # cv2.imshow("input" , frame)
+        cv2.imshow(window_name, labeled_frame)
 
         if args.image is None:
             c = cv2.waitKey(50)

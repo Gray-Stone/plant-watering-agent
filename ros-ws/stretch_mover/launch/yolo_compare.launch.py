@@ -17,9 +17,13 @@ def generate_launch_description():
     stretch_mover_share = get_package_share_directory('stretch_mover')
 
     models :list[Path] = [
+        # This is the older one, without turning on rotation augmentation
         Path(stretch_mover_share) / "models/seg-water-pot-new.pt",
-        Path(stretch_mover_share) / "models/seg-water-pot-new.pt",
-        Path(stretch_mover_share) / "models/seg-water-pot-new.pt",
+        # 3 new sets of model, with rotation settings.
+        Path(stretch_mover_share) / "models/lamb-watering-pot-2.pt",
+        Path(stretch_mover_share) / "models/lamb-10kpot_cont-watering-area-2.pt",
+        # pot only base, for comparison
+        Path(stretch_mover_share) / "models/lamb_10kpot.pt",
     ]
 
     yolo_params = {

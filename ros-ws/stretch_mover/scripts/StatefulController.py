@@ -13,10 +13,9 @@ import tf_transformations
 from rclpy.executors import MultiThreadedExecutor
 import numpy as np
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from builtin_interfaces.msg import Duration as DurationMsg
 from builtin_interfaces.msg import Time as RosTime
-from geometry_msgs.msg import Point, PointStamped, TransformStamped, Transform, Vector3 , PoseStamped, Pose , Twist
+from geometry_msgs.msg import Point, PointStamped, TransformStamped, Transform, Vector3, PoseStamped, Pose, Twist
 from nav2_msgs.action import ComputePathToPose, FollowPath, NavigateToPose
 from nav_msgs.msg import MapMetaData, OccupancyGrid
 
@@ -29,21 +28,19 @@ from std_msgs.msg import ColorRGBA, Header
 from std_msgs.msg import String as StringMsg
 from std_srvs.srv import Trigger as TriggerSrv
 
-from stretch_mover.msg import (KnownObject, KnownObjectList, YoloDetection,
-                               YoloDetectionList)
+from stretch_mover.msg import (KnownObject, KnownObjectList, YoloDetection, YoloDetectionList)
 from tf2_geometry_msgs.tf2_geometry_msgs import do_transform_point
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup , ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from collections import deque
 
-from trajectory_msgs.msg import MultiDOFJointTrajectory , MultiDOFJointTrajectoryPoint, JointTrajectory, JointTrajectoryPoint
+from trajectory_msgs.msg import MultiDOFJointTrajectory, MultiDOFJointTrajectoryPoint, JointTrajectory, JointTrajectoryPoint
 
-
-from stretch_mover_utils.grid_utils import OccupancyGridHelper , COLOR_MSG_LIST_RGBW
+from stretch_mover_utils.grid_utils import OccupancyGridHelper, COLOR_MSG_LIST_RGBW
 
 from control_msgs.action import FollowJointTrajectory
 # COLOR_MSG_LIST_RGBW = [
@@ -53,37 +50,40 @@ from control_msgs.action import FollowJointTrajectory
 #     ColorRGBA(r=1.0,b=1.0,g=1.0,a=1.0),
 # ]
 
-def get_z_angle_to_point(point: Point):
-    return normalize_angle(math.atan2(point.y , point.x))
 
-def point_point_distanec(point1:Point,point2:Point):
-    return np.sqrt ((point1.x - point2.x)**2 + (point1.y - point2.y)**2 + (point1.z - point2.z)**2)
+def get_z_angle_to_point(point: Point):
+    return normalize_angle(math.atan2(point.y, point.x))
+
+
+def point_point_distanec(point1: Point, point2: Point):
+    return np.sqrt((point1.x - point2.x)**2 + (point1.y - point2.y)**2 + (point1.z - point2.z)**2)
 
 
 def sign(num):
     return -1 if num < 0 else 1
 
-def normalize_angle (angle: float) -> float:
 
+def normalize_angle(angle: float) -> float:
 
     #   return rad - (std::ceil((rad + PI) / (2.0 * PI)) - 1.0) * 2.0 * PI;
 
-    return angle - (math.ceil((angle  + math.pi) / (2.0 * math.pi)) - 1.0) * 2.0 * math.pi;
+    return angle - (math.ceil((angle + math.pi) / (2.0 * math.pi)) - 1.0) * 2.0 * math.pi
 
-def map_marker_check(map_helper: OccupancyGridHelper)->Marker:
+
+def map_marker_check(map_helper: OccupancyGridHelper) -> Marker:
     # Map data: -1 unknown, 0 free, 100 occupied.
     locs = []
     for ix in range(map_helper.map_info.width):
         for iy in range(map_helper.map_info.height):
-            loc = (ix,iy)
+            loc = (ix, iy)
             if not map_helper.ValidLoc(loc):
                 raise ValueError(f"ixy {loc} is out of bound! ")
             locs.append(loc)
 
-    return map_helper.color_sphere_gen(locs , scale = 0.03)
+    return map_helper.color_sphere_gen(locs, scale=0.03)
 
 
-def MakeSphereMaker(id , pos: Point , header , color : ColorRGBA = ColorRGBA(r=1.0,a=1.0)) -> Marker:
+def MakeSphereMaker(id, pos: Point, header, color: ColorRGBA = ColorRGBA(r=1.0, a=1.0)) -> Marker:
     m = Marker()
     m.header = header
     m.type = Marker.SPHERE
@@ -95,25 +95,40 @@ def MakeSphereMaker(id , pos: Point , header , color : ColorRGBA = ColorRGBA(r=1
     m.scale.z = 0.1
     return m
 
+
 def MakeCylinderMarker(id,
                        pos: Point,
                        header,
-                       color=COLOR_MSG_LIST_RGBW[1],
+                       color=ColorRGBA(r=1.0, g=0.2, b=1.0, a=1.0),
                        diameter=0.02,
                        height=1.8,
-                       alpha = 0.9) -> Marker:
+                       alpha=0.9) -> Marker:
     m = Marker()
     m.header = header
     m.type = Marker.CYLINDER
     m.id = id
     m.pose.position = pos
-    m.pose.position.z+=height/2
+    m.pose.position.z += height / 2
     m.color = color
-    m.color.a =alpha
+    m.color.a = alpha
     m.scale.x = diameter
     m.scale.y = diameter
     m.scale.z = height
     return m
+
+
+def MakeTextMarker(id,
+                   data: str,
+                   pos: PointStamped,
+                   color=ColorRGBA(r=0.8, g=0.4, b=1.0, a=1.0),
+                   scale=0.3) -> Marker:
+    m = Marker()
+    m.header = pos.header
+    m.type = Marker.TEXT_VIEW_FACING
+    m.id = id
+    m.pose.position = pos.point
+    m.color = color
+    m.scale.z = scale
 
 
 class ModeSwitchNode(Node):
@@ -122,16 +137,23 @@ class ModeSwitchNode(Node):
         super().__init__("stretch_mode_switching")
         self.service_client_cb_group = ReentrantCallbackGroup()
 
-        self.switch_nav_service = self.create_client(TriggerSrv,"switch_to_navigation_mode" ,callback_group=self.service_client_cb_group)
-        self.switch_pos_service = self.create_client(TriggerSrv,"switch_to_position_mode" ,callback_group=self.service_client_cb_group)
-        self.switch_traj_service = self.create_client(TriggerSrv,"switch_to_trajectory_mode" ,callback_group=self.service_client_cb_group)
-        self.switch_gamepad_service = self.create_client(TriggerSrv,"switch_to_gamepad_mode" ,callback_group=self.service_client_cb_group)
+        self.switch_nav_service = self.create_client(TriggerSrv,
+                                                     "switch_to_navigation_mode",
+                                                     callback_group=self.service_client_cb_group)
+        self.switch_pos_service = self.create_client(TriggerSrv,
+                                                     "switch_to_position_mode",
+                                                     callback_group=self.service_client_cb_group)
+        self.switch_traj_service = self.create_client(TriggerSrv,
+                                                      "switch_to_trajectory_mode",
+                                                      callback_group=self.service_client_cb_group)
+        self.switch_gamepad_service = self.create_client(
+            TriggerSrv, "switch_to_gamepad_mode", callback_group=self.service_client_cb_group)
 
 
 class GoalMover(Node):
 
     PAUSE_DURATION = 3.0
-    LIFT_VELOCITY_MAX = 0.14 # 0.15 from driver
+    LIFT_VELOCITY_MAX = 0.14  # 0.15 from driver
 
     PLANT_CLASS_ID = 0
     WATERING_AREA_CLASS_ID = 1
@@ -140,14 +162,15 @@ class GoalMover(Node):
     NAV_PLANED_LOC_MARKER_ID = 89
 
     PLAN_GOAL_CLEARANCE_RADIUS = 0.4
-    MAX_PLAN_OFFSET_RADIUS = 1.1 # arm length is 0.52
-    MIN_PLAN_OFFSET_RADIUS = 0.55 # We want to have some distance so arm could extend
+    MAX_PLAN_OFFSET_RADIUS = 1.1  # arm length is 0.52
+    MIN_PLAN_OFFSET_RADIUS = 0.55  # We want to have some distance so arm could extend
     POT_TO_WATERING_DIS_THRESHOLD = 0.24
 
+    TEXT_INFO_ID = 79
 
     class CmdStates(Enum):
         IDLE = enum.auto()
-        
+
         # If all prefect, states should only linearly go down.
         PAUSE_BEFORE_NEXT = enum.auto()
         # If any of the following state failed, should jump to pause (instead of plant select for next plant)
@@ -157,11 +180,10 @@ class GoalMover(Node):
         WATERING_AREA_FINDING = enum.auto()
         WATERING = enum.auto()
 
-
-    def pub_marker(self , m:Marker):
+    def pub_marker(self, m: Marker):
         self.marker_pub.publish(m)
 
-    def __init__(self , mode_switch_node: ModeSwitchNode):
+    def __init__(self, mode_switch_node: ModeSwitchNode):
         super().__init__("move_to_plants")
 
         self.info = self.get_logger().info
@@ -169,49 +191,47 @@ class GoalMover(Node):
         self.error = self.get_logger().error
 
         #### Parameters
-        self.declare_parameter("pot_class_id" , int(1))
+        self.declare_parameter("pot_class_id", int(1))
         # world frame will also be the map's frame.
-        self.declare_parameter("world_frame" , 'map')
-        self.declare_parameter("robot_baseframe" , "base_footprint")
-        self.declare_parameter("mast_frame" , "link_mast")
-        self.declare_parameter("ee_frame" , "link_grasp_center")
+        self.declare_parameter("world_frame", 'map')
+        self.declare_parameter("robot_baseframe", "base_footprint")
+        self.declare_parameter("mast_frame", "link_mast")
+        self.declare_parameter("ee_frame", "link_grasp_center")
 
         self.declare_parameter("known_object_topic", "yolo_ros/known_objects")
 
         self.pot_class_id = self.get_parameter("pot_class_id").get_parameter_value().integer_value
         self.world_frame = self.get_parameter("world_frame").get_parameter_value().string_value
-        self.robot_baseframe = self.get_parameter("robot_baseframe").get_parameter_value().string_value
+        self.robot_baseframe = self.get_parameter(
+            "robot_baseframe").get_parameter_value().string_value
         self.mast_frame = self.get_parameter("mast_frame").get_parameter_value().string_value
         self.ee_frame = self.get_parameter("ee_frame").get_parameter_value().string_value
-        known_object_topic = self.get_parameter("known_object_topic").get_parameter_value().string_value
-
+        known_object_topic = self.get_parameter(
+            "known_object_topic").get_parameter_value().string_value
 
         #### Member Vars
-        self.map_helper :OccupancyGridHelper = None
+        self.map_helper: OccupancyGridHelper = None
         self.known_obj_list: KnownObjectList = None
-        self.js_map: dict[str,float] = {}
+        self.js_map: dict[str, float] = {}
         self.next_planning_object_idx = 0
-        self.current_chasing_plant : KnownObject = None
+        self.current_chasing_plant: KnownObject = None
         self.current_watering_obj: KnownObject = None
-
 
         # List of skipped pots
         self.skipped_pot_objects: deque[KnownObject] = deque()
 
         self.successful_planned_pose: PoseStamped = None
 
-
         self.state = self.CmdStates.IDLE
         self.state_update(self.CmdStates.PAUSE_BEFORE_NEXT)
-
 
         # Time keeper for the pause state.
         self.pause_start_time = None
 
         #### Publisher
-        self.state_change_publisher = self.create_publisher(StringMsg , "move_plant_state_change" , 2)
-        self.marker_pub = self.create_publisher(Marker, "VisualizationMarker" , 1)
-        self.cmd_vel_pub = self.create_publisher(Twist, "/stretch/cmd_vel" , 1)
+        self.state_change_publisher = self.create_publisher(StringMsg, "move_plant_state_change", 2)
+        self.marker_pub = self.create_publisher(Marker, "VisualizationMarker", 1)
+        self.cmd_vel_pub = self.create_publisher(Twist, "/stretch/cmd_vel", 1)
 
         #### Service client
         # /switch_to_navigation_mode [std_srvs/srv/Trigger]
@@ -219,8 +239,8 @@ class GoalMover(Node):
         # /switch_to_trajectory_mode [std_srvs/srv/Trigger]
         # self.service_client_cb_group = ReentrantCallbackGroup()
 
-        self.switch_nav_service  = mode_switch_node.switch_nav_service
-        self.switch_pos_service  = mode_switch_node.switch_pos_service
+        self.switch_nav_service = mode_switch_node.switch_nav_service
+        self.switch_pos_service = mode_switch_node.switch_pos_service
         self.switch_traj_service = mode_switch_node.switch_traj_service
         self.switch_gamepad_service = mode_switch_node.switch_gamepad_service
 
@@ -251,17 +271,21 @@ class GoalMover(Node):
                                                  1,
                                                  callback_group=self.data_update_cb_group)
         # self.map_subs = self.create_subscription(OccupancyGrid, "/local_costmap/costmap" , self.global_map_cb , 1)
-        self.known_obj_subs  = self.create_subscription(  KnownObjectList , known_object_topic , self.known_obj_cb , 1 , callback_group=self.data_update_cb_group)
+        self.known_obj_subs = self.create_subscription(KnownObjectList,
+                                                       known_object_topic,
+                                                       self.known_obj_cb,
+                                                       1,
+                                                       callback_group=self.data_update_cb_group)
         self.js_sub = self.create_subscription(JointState,
                                                "joint_states",
                                                self.joint_state_cb,
                                                2,
                                                callback_group=self.data_update_cb_group)
         ## main timer
-        self.create_timer(0.5,self.main_timer)
+        self.create_timer(0.5, self.main_timer)
         self.get_logger().info("Node configured, timer created!")
 
-    def global_map_cb(self,map_msg : OccupancyGrid):
+    def global_map_cb(self, map_msg: OccupancyGrid):
         # print(f"\n\n ================== ")
         # print(f"Got map , header {map_msg.header} , info {map_msg.info}")
 
@@ -272,13 +296,13 @@ class GoalMover(Node):
     def known_obj_cb(self, msg: KnownObjectList):
         self.known_obj_list = msg
 
-    def joint_state_cb(self,msg:JointState):
-        for name,val in zip(msg.name , msg.position):
+    def joint_state_cb(self, msg: JointState):
+        for name, val in zip(msg.name, msg.position):
             self.js_map[name] = val
         # This way traj generationg don't need to do special case for arm
         self.js_map['wrist_extension'] = self.get_wrist_extension_js()
 
-    def state_update(self , new_state:Optional[CmdStates]):
+    def state_update(self, new_state: Optional[CmdStates]):
         if new_state is None:
             return
         if new_state == self.state:
@@ -287,7 +311,6 @@ class GoalMover(Node):
         self.get_logger().warn(f" ==== >>>>  State changing from {self.state} to {new_state}")
         self.state = new_state
         return
-
 
     """####################### 
     State machines ! 
@@ -306,10 +329,8 @@ class GoalMover(Node):
             self.state_update(await self.pause_before_next_state())
         # TODO, maybe add a camera set, tilt of -0.7568123906306684 seems low and good for nav.
 
-
         elif self.state == self.CmdStates.PLANT_SELECTION:
             self.state_update(await self.plant_selection_state())
-
 
         elif self.state == self.CmdStates.NAV_PLANNING:
             self.state_update(await self.nav_planning_state())
@@ -328,7 +349,7 @@ class GoalMover(Node):
             raise RuntimeError(f"Stuck in non-existing state: {self.state}")
         # Reached here cuz state is just wrong !
 
-    def make_ComputePathToPose_goal(self , x,y , heading_z):
+    def make_ComputePathToPose_goal(self, x, y, heading_z):
         pose_goal = ComputePathToPose.Goal()
         pose_goal.goal.header.frame_id = self.world_frame
         pose_goal.goal.header.stamp = self.get_clock().now().to_msg()
@@ -337,8 +358,7 @@ class GoalMover(Node):
         pose_goal.goal.pose.position.x = x
         pose_goal.goal.pose.position.y = y
 
-
-        q = tf_transformations.quaternion_from_euler(0,0,heading_z)
+        q = tf_transformations.quaternion_from_euler(0, 0, heading_z)
         pose_goal.goal.pose.orientation.x = q[0]
         pose_goal.goal.pose.orientation.y = q[1]
         pose_goal.goal.pose.orientation.z = q[2]
@@ -349,9 +369,13 @@ class GoalMover(Node):
         pose_goal.use_start = False
         return pose_goal
 
-    async def ActionSendAwait(self,goal_obj , client : ActionClient , feedback_cb = None )-> tuple [GoalStatus,any]:
+    async def ActionSendAwait(self,
+                              goal_obj,
+                              client: ActionClient,
+                              feedback_cb=None) -> tuple[GoalStatus, any]:
 
-        goal_handle: ClientGoalHandle =  await client.send_goal_async(goal_obj , feedback_callback=feedback_cb)
+        goal_handle: ClientGoalHandle = await client.send_goal_async(goal_obj,
+                                                                     feedback_callback=feedback_cb)
 
         if not goal_handle.accepted:
             raise ValueError("goal rejected!")
@@ -361,8 +385,7 @@ class GoalMover(Node):
         # self.get_logger().warn(f"type of res is {type(res)}, itself is \n{res}")
 
         # if res.status != GoalStatus.STATUS_SUCCEEDED:
-        return res.status,  res.result
-
+        return res.status, res.result
 
     def StartupCheck(self) -> bool:
         # effectively skip to next cycle if these are none
@@ -379,15 +402,14 @@ class GoalMover(Node):
 
     async def debug_state(self):
 
-        await    self.pour_water_action()
+        await self.pour_water_action()
         raise
 
-    def refresh_object(self,object:KnownObject):
+    def refresh_object(self, object: KnownObject) -> KnownObject:
 
         self.info(f"refreshing object's info for {object}")
 
-
-        o:KnownObject
+        o: KnownObject
         for o in self.known_obj_list.objects:
             if o.id == object.id:
                 self.info(f"refreshed object info is {o}")
@@ -398,7 +420,7 @@ class GoalMover(Node):
 
     async def pause_before_next_state(self):
         if len(self.js_map) < 7:
-            # This is just launch, we at least want js to be updated 
+            # This is just launch, we at least want js to be updated
             return
         if self.pause_start_time is None:
             self.clear_marker(self.NAV_PLANED_LOC_MARKER_ID)
@@ -409,7 +431,7 @@ class GoalMover(Node):
             ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
             self.get_logger().info(f"ret from switch nav {ret} ")
 
-            await self.move_single_joint("joint_head_tilt" , -0.25)
+            await self.move_single_joint("joint_head_tilt", -0.25)
             # await self.camera_scan_around(pan_delta=1.5 ,tilt_delta=0.0 , velocity=0.2)
 
             self.pause_start_time = time.time()
@@ -421,7 +443,6 @@ class GoalMover(Node):
             return self.CmdStates.PLANT_SELECTION
         return self.CmdStates.PAUSE_BEFORE_NEXT
 
-
     async def plant_selection_state(self):
         """Pick the object for next round of action to plan for.
 
@@ -430,14 +451,13 @@ class GoalMover(Node):
         if not self.StartupCheck():
             return self.CmdStates.PAUSE_BEFORE_NEXT
 
-
-        obj :KnownObject
+        obj: KnownObject
         if self.next_planning_object_idx < len(self.known_obj_list.objects):
 
-            obj :KnownObject = self.known_obj_list.objects[self.next_planning_object_idx]
+            obj: KnownObject = self.known_obj_list.objects[self.next_planning_object_idx]
             # We've pick the plant, increment counter
-            self.next_planning_object_idx +=1 # move on for next iteration
-        elif len(self.skipped_pot_objects) >0:
+            self.next_planning_object_idx += 1  # move on for next iteration
+        elif len(self.skipped_pot_objects) > 0:
             self.warn(f"Out of new objects to check, Going back to previously skipped objects")
             obj = self.skipped_pot_objects.popleft()
         else:
@@ -449,15 +469,14 @@ class GoalMover(Node):
             return self.CmdStates.PLANT_SELECTION
 
         self.warn(f"\n\n---------------------------------------- \n"
-        "Working on new plant"
-        f"id {obj.id}"
-        f"at {obj.space_loc}"
-        "= VV = VV = VV =")
+                  "Working on new plant"
+                  f"id {obj.id}"
+                  f"at {obj.space_loc}"
+                  "= VV = VV = VV =")
 
         self.current_chasing_plant = obj
 
         return self.CmdStates.NAV_PLANNING
-
 
     async def nav_planning_state(self) -> CmdStates:
         if not self.StartupCheck():
@@ -465,17 +484,20 @@ class GoalMover(Node):
 
         self.get_logger().warn(f"Handling Object at index {self.next_planning_object_idx}")
 
-
-        maybe_goal_pose = await self.plan_to_point(self.current_chasing_plant.space_loc  , self.MIN_PLAN_OFFSET_RADIUS, self.MAX_PLAN_OFFSET_RADIUS)
+        maybe_goal_pose = await self.plan_to_point(self.current_chasing_plant.space_loc,
+                                                   self.MIN_PLAN_OFFSET_RADIUS,
+                                                   self.MAX_PLAN_OFFSET_RADIUS)
 
         if maybe_goal_pose is None:
-            self.error(f"Cannot plan to current object id {self.current_chasing_plant.id} at {self.current_chasing_plant.space_loc}")
+            self.error(
+                f"Cannot plan to current object id {self.current_chasing_plant.id} at {self.current_chasing_plant.space_loc}"
+            )
             self.skipped_pot_objects.append(self.current_chasing_plant)
             return self.CmdStates.PAUSE_BEFORE_NEXT
 
         self.successful_planned_pose = maybe_goal_pose
         self.get_logger().info(f"Recording with pose {self.successful_planned_pose}")
-        
+
         # After planning move to executing
         return self.CmdStates.MOVING
 
@@ -493,19 +515,20 @@ class GoalMover(Node):
         nav_goal.pose = self.successful_planned_pose
         nav_goal.pose.header.stamp = self.get_clock().now().to_msg()
         for i in range(3):
-            result : NavigateToPose.Result
+            result: NavigateToPose.Result
             status, result = await self.ActionSendAwait(
                 nav_goal,
                 self.navigate_to_pose_client,
                 # print_fb,
             )
             if status != GoalStatus.STATUS_SUCCEEDED:
-                self.get_logger().warn(f"Did not get successful goal result, got {status}" )
+                self.get_logger().warn(f"Did not get successful goal result, got {status}")
             else:
                 # This is the successful break condition.
                 break
         else:
-            self.get_logger().error(f"Repeated Failure trying to nav to {nav_goal.pose.pose.position}")
+            self.get_logger().error(
+                f"Repeated Failure trying to nav to {nav_goal.pose.pose.position}")
             self.error("Going back and select next plant.")
             return self.CmdStates.PAUSE_BEFORE_NEXT
 
@@ -523,7 +546,7 @@ class GoalMover(Node):
 
         await self.camera_look_at_object(loc_world)
         # await self.camera_scan_around()
-        time.sleep(1.0) # Give yolo time to update
+        time.sleep(1.0)  # Give yolo time to update
         self.current_chasing_plant = self.refresh_object(self.current_chasing_plant)
 
         search_trials = 0
@@ -532,18 +555,23 @@ class GoalMover(Node):
 
         while True:
             # Then find a close by watering area.
-            potential_watering_obj:KnownObject
+            potential_watering_obj: KnownObject
             for potential_watering_obj in self.known_obj_list.objects:
                 if potential_watering_obj.object_class == self.WATERING_AREA_CLASS_ID:
                     # Watering object must be above the pot
                     z_diff = potential_watering_obj.space_loc.point.z - plant_object.space_loc.point.z
-                    self.info(f"Comparing potential {potential_watering_obj} \nto {plant_object}\n"
-                    f"distance {point_point_distanec(potential_watering_obj.space_loc.point , plant_object.space_loc.point)}\n"
-                    f"z_diff { z_diff}")
-                    if z_diff > -0.01 :
-                        if point_point_distanec(potential_watering_obj.space_loc.point , plant_object.space_loc.point) < self.POT_TO_WATERING_DIS_THRESHOLD :
+                    self.info(
+                        f"Comparing potential {potential_watering_obj} \nto {plant_object}\n"
+                        f"distance {point_point_distanec(potential_watering_obj.space_loc.point , plant_object.space_loc.point)}\n"
+                        f"z_diff { z_diff}")
+                    if z_diff > -0.01:
+                        if point_point_distanec(
+                                potential_watering_obj.space_loc.point,
+                                plant_object.space_loc.point) < self.POT_TO_WATERING_DIS_THRESHOLD:
                             self.current_watering_obj = potential_watering_obj
-                            self.warn(f"Found matching watering area with id {potential_watering_obj.id} at {potential_watering_obj.space_loc.point}")
+                            self.warn(
+                                f"Found matching watering area with id {potential_watering_obj.id} at {potential_watering_obj.space_loc.point}"
+                            )
                             return self.CmdStates.WATERING
 
             # we have went through all current objects without finding anything.
@@ -555,10 +583,10 @@ class GoalMover(Node):
                 return self.CmdStates.PAUSE_BEFORE_NEXT
 
             self.warn(f"Did not match any watering area, moving camera around more")
-            await self.camera_scan_around( velocity = scan_velocity)
+            await self.camera_scan_around(velocity=scan_velocity)
             self.current_chasing_plant = self.refresh_object(self.current_chasing_plant)
             plant_object = self.current_chasing_plant
-            search_trials +=1
+            search_trials += 1
             scan_velocity = scan_velocity * 0.75
 
         return self.CmdStates.WATERING_AREA_FINDING
@@ -574,15 +602,16 @@ class GoalMover(Node):
         watering_loc = self.current_watering_obj.space_loc
 
         await self.camera_look_at_object(watering_loc)
-        time.sleep(1.0) # Give yolo time to update
+        time.sleep(1.0)  # Give yolo time to update
         self.current_watering_obj = self.refresh_object(self.current_watering_obj)
         watering_loc = self.current_watering_obj.space_loc
 
-
         # Make sure we centered the wrist
         self.info(f"re-centering the wrist")
-        await self.move_multi_joint(
-            ["joint_wrist_yaw", "joint_wrist_pitch", "joint_wrist_roll"], [0, 0.1, 0], duration=1.0 , fail_able=True)
+        await self.move_multi_joint(["joint_wrist_yaw", "joint_wrist_pitch", "joint_wrist_roll"],
+                                    [0, 0.1, 0],
+                                    duration=1.0,
+                                    fail_able=True)
 
         # And also retract the arm
         if (self.get_wrist_extension_js() > 0.):
@@ -599,30 +628,29 @@ class GoalMover(Node):
         self.get_logger().info(f"current object loc in ee frame {loc_in_ee}")
         # This does needs a little extra.
         lift_amount = loc_in_ee.point.z + 0.03
-        await self.move_single_joint_delta( "joint_lift" , lift_amount , duration = lift_amount / self.LIFT_VELOCITY_MAX + 0.5)
-
+        await self.move_single_joint_delta("joint_lift",
+                                           lift_amount,
+                                           duration=lift_amount / self.LIFT_VELOCITY_MAX + 0.5)
 
         # MOVE camera with the base turning.
-        await self.turn_info_plant_cmdvel(watering_loc , offset = math.pi/2)
+        await self.turn_info_plant_cmdvel(watering_loc, offset=math.pi / 2)
         self.get_logger().warn("switching to pos mode again")
         # ret = await self.switch_traj_service.call_async(TriggerSrv.Request())
         ret = await self.switch_pos_service.call_async(TriggerSrv.Request())
         self.get_logger().info(f"ret from switch pos {ret} ")
 
         await self.camera_look_at_object(watering_loc)
-        time.sleep(1.0) # Give yolo time to update
+        time.sleep(1.0)  # Give yolo time to update
         self.current_watering_obj = self.refresh_object(self.current_watering_obj)
         watering_loc = self.current_watering_obj.space_loc
 
-
-
         # Now we extend the arm to the plant.
         self.info(f"Extending arm")
-        loc_in_ee = self.get_point_in_frame(watering_loc , self.ee_frame)
+        loc_in_ee = self.get_point_in_frame(watering_loc, self.ee_frame)
 
         # Now we take out the x-component. as the arm delta.
 
-        if (loc_in_ee.point.x < 0.1) :
+        if (loc_in_ee.point.x < 0.1):
             self.info(f"Arm already close enough to target.")
         else:
             # We don't do it all the way, leave a tiny tiny bit.
@@ -630,7 +658,7 @@ class GoalMover(Node):
             self.info(f"extending arm for {extension_delta} amount")
             if extension_delta > 0.52:
                 self.warn("arm extension value is too large, maybe should re-do moving?")
-            await self.move_single_joint_delta("wrist_extension" ,extension_delta  , duration=2.0)
+            await self.move_single_joint_delta("wrist_extension", extension_delta, duration=2.0)
 
         # Final lineup using the wrist.
         # The angle from wrist joint, into the plant is what's needed.
@@ -640,16 +668,17 @@ class GoalMover(Node):
         # link_wrist_yaw is pointing z down, and in urdf, the joint is     <axis xyz="0.0 0.0 -1.0"/>
         # Need to flip the angle comming out here.
 
-
-
         # loc_in_ee = self.get_point_in_ee(loc_world)
         self.info("aiming wrist to target")
         loc_in_wrist = self.get_point_in_frame(watering_loc, "link_wrist_yaw")
 
         # Flip direction
-        wrist_yaw_angle = normalize_angle( - math.atan2(loc_in_wrist.point.y , loc_in_wrist.point.x) - math.pi/2)
-        self.info(f"Target in wrist frame at {loc_in_wrist} , calculated, flipped angle is {wrist_yaw_angle}")
-        await self.move_single_joint_delta("joint_wrist_yaw" , wrist_yaw_angle)
+        wrist_yaw_angle = normalize_angle(-math.atan2(loc_in_wrist.point.y, loc_in_wrist.point.x) -
+                                          math.pi / 2)
+        self.info(
+            f"Target in wrist frame at {loc_in_wrist} , calculated, flipped angle is {wrist_yaw_angle}"
+        )
+        await self.move_single_joint_delta("joint_wrist_yaw", wrist_yaw_angle)
 
         time.sleep(3.0)
 
@@ -658,60 +687,68 @@ class GoalMover(Node):
         await self.pour_water_action()
 
         # TODO mark the PLANT when it is watered!
+        text_pos = watering_loc
+        text_pos.point.z += 0.5
+
+        self.pub_marker(MakeTextMarker(self.TEXT_INFO_ID, "Watered!", text_pos))
 
         time.sleep(2.0)
         self.warn("Retracting arm ! ")
 
-        await self.move_single_joint("wrist_extension",0.001 , duration=2.0)
-
+        await self.move_single_joint("wrist_extension", 0.001, duration=2.0)
 
         self.info(f"Turning the base back and lowering the lift.")
         # Now turn the base back. to clear for lowering the arm
         await self.ResetCamera()
-        await self.turn_info_plant_cmdvel(watering_loc ,offset= 0)
+        await self.turn_info_plant_cmdvel(watering_loc, offset=0)
         await self.lower_arm_to_nav()
 
-        self.warn(f"Watered plant with id {self.current_chasing_plant.id} at {self.current_chasing_plant.space_loc}")
+        self.warn(
+            f"Watered plant with id {self.current_chasing_plant.id} at {self.current_chasing_plant.space_loc}"
+        )
 
         # TODO remove his debug thing
         await self.switch_gamepad_service.call_async(TriggerSrv.Request())
 
-
-
         return self.CmdStates.PAUSE_BEFORE_NEXT
 
     async def lower_arm_to_nav(self):
-        await self.move_single_joint("joint_lift" , 0.28,duration = 2.0 )
+        await self.move_single_joint("joint_lift", 0.28, duration=2.0)
 
-
-    async def plan_to_point(self,goal_point:PointStamped , min_proximity, max_proximity) -> Optional[PoseStamped]:
+    async def plan_to_point(self, goal_point: PointStamped, min_proximity,
+                            max_proximity) -> Optional[PoseStamped]:
 
         if goal_point.header.frame_id != self.map_helper.map_frame:
             self.warn(
                 f"Planning target have different frame then map ({goal_point.header.frame_id}),"
                 " Converting")
-            maybe_goal_point = self.try_transform(goal_point,self.map_helper.map_frame)
+            maybe_goal_point = self.try_transform(goal_point, self.map_helper.map_frame)
             if maybe_goal_point is None:
-                self.warn(f"Cannot convert goal {goal_point} into map frame {self.map_helper.map_frame}")
+                self.warn(
+                    f"Cannot convert goal {goal_point} into map frame {self.map_helper.map_frame}")
                 return None
             goal_point = maybe_goal_point
-
 
         # Search go out as a circle.
         # every time the potential points are emptied, search radius increase and fill the list again.
         target_map_coord = self.map_helper.world_point_to_map(goal_point.point)
 
-        check_cell_rad = math.ceil(self.PLAN_GOAL_CLEARANCE_RADIUS / self.map_helper.map_info.resolution)
+        check_cell_rad = math.ceil(self.PLAN_GOAL_CLEARANCE_RADIUS /
+                                   self.map_helper.map_info.resolution)
         self.get_logger().info(f"Searching for plan-able grid-location with clearance of "
-        f"{self.PLAN_GOAL_CLEARANCE_RADIUS} m / {check_cell_rad} grids")
+                               f"{self.PLAN_GOAL_CLEARANCE_RADIUS} m / {check_cell_rad} grids")
 
         min_search_ring_grid_rad = min_proximity / self.map_helper.meter_per_cell
         max_search_ring_grid_rad = max_proximity / self.map_helper.meter_per_cell
-        
-        for ring_grid_rad in range( int(min_search_ring_grid_rad) , int(max_search_ring_grid_rad)+1 ):
+
+        for ring_grid_rad in range(int(min_search_ring_grid_rad),
+                                   int(max_search_ring_grid_rad) + 1):
             for maybe_coord in self.map_helper.GetRing(target_map_coord, ring_grid_rad):
-                maybe_valid , checked_coords = self.map_helper.CheckEmptyCircle(maybe_coord , check_cell_rad)
-                debug_marker = self.map_helper.color_sphere_gen(checked_coords ,id = self.NAV_PLANED_LOC_MARKER_ID , color = COLOR_MSG_LIST_RGBW[1] )
+                maybe_valid, checked_coords = self.map_helper.CheckEmptyCircle(
+                    maybe_coord, check_cell_rad)
+                debug_marker = self.map_helper.color_sphere_gen(checked_coords,
+                                                                id=self.NAV_PLANED_LOC_MARKER_ID,
+                                                                color=COLOR_MSG_LIST_RGBW[1])
                 self.pub_marker(debug_marker)
 
                 if maybe_valid:
@@ -719,55 +756,69 @@ class GoalMover(Node):
                     loc_x, loc_y = planning_xy
                     diff_x = goal_point.point.x - loc_x
                     diff_y = goal_point.point.y - loc_y
-                    heading_into_plant =math.atan2(diff_y, diff_x)
-                    pose_goal = self.make_ComputePathToPose_goal(loc_x, loc_y , heading_into_plant)
-                    goal_marker = MakeCylinderMarker(id = self.POI_MARKER_ID, pos= pose_goal.goal.pose.position , header=pose_goal.goal.header, height= goal_point.point.z *2)
+                    heading_into_plant = math.atan2(diff_y, diff_x)
+                    pose_goal = self.make_ComputePathToPose_goal(loc_x, loc_y, heading_into_plant)
+                    goal_marker = MakeCylinderMarker(id=self.POI_MARKER_ID,
+                                                     pos=pose_goal.goal.pose.position,
+                                                     header=pose_goal.goal.header,
+                                                     height=goal_point.point.z * 2)
                     self.pub_marker(goal_marker)
 
                     self.get_logger().info(f"Try nav planning to {pose_goal.goal.pose.position}")
 
-                    planning_result : ComputePathToPose.Result
-                    goal_status , planning_result = await self.ActionSendAwait(pose_goal , self.compute_path_client)
+                    planning_result: ComputePathToPose.Result
+                    goal_status, planning_result = await self.ActionSendAwait(
+                        pose_goal, self.compute_path_client)
                     if goal_status != GoalStatus.STATUS_SUCCEEDED:
-                        self.get_logger().warn(f"Did not get successful goal result, got {goal_status} with {planning_result}" )
+                        self.get_logger().warn(
+                            f"Did not get successful goal result, got {goal_status} with {planning_result}"
+                        )
                     else:
                         # This is the successful break condition.
-                                # Get back the pose we have successfully planned for
-                        self.get_logger().info(f"Got a planned path to {planning_xy} , planning_time {planning_result.planning_time} ")
+                        # Get back the pose we have successfully planned for
+                        self.get_logger().info(
+                            f"Got a planned path to {planning_xy} , planning_time {planning_result.planning_time} "
+                        )
                         return pose_goal.goal
 
-                # Try again on next cell 
-        else: 
-            self.error(f"MAX Plan offset radius reached for {goal_point.point}\n"
-            f"Last tried radius: cell: {ring_grid_rad} world: {ring_grid_rad * self.map_helper.meter_per_cell}\n")
+                # Try again on next cell
+        else:
+            self.error(
+                f"MAX Plan offset radius reached for {goal_point.point}\n"
+                f"Last tried radius: cell: {ring_grid_rad} world: {ring_grid_rad * self.map_helper.meter_per_cell}\n"
+            )
             return None
 
-
-    async def turn_info_plant_cmdvel(self,target_point : Point , offset =0 ):
+    async def turn_info_plant_cmdvel(self, target_point: Point, offset=0):
 
         self.get_logger().warn("switching to nav mode ")
 
-        switch_mode_future =  self.switch_nav_service.call_async(TriggerSrv.Request())
+        switch_mode_future = self.switch_nav_service.call_async(TriggerSrv.Request())
 
         self.info(f"Turning base to lineup arm")
 
         loc_base = self.get_point_in_frame(target_point, self.robot_baseframe)
         self.get_logger().info(f"Target's location in base frame is {loc_base}")
-        self.marker_pub.publish(MakeCylinderMarker(id=self.POI_MARKER_ID , pos=loc_base.point , header= loc_base.header,diameter=0.08 , height=0.3 , alpha= 0.3))
+        self.marker_pub.publish(
+            MakeCylinderMarker(id=self.POI_MARKER_ID,
+                               pos=loc_base.point,
+                               header=loc_base.header,
+                               diameter=0.08,
+                               height=0.3,
+                               alpha=0.3))
 
         # Then we compute the angle for turning.
-        base_diff_angle = math.atan2(loc_base.point.y , loc_base.point.x)
+        base_diff_angle = math.atan2(loc_base.point.y, loc_base.point.x)
         base_diff_offset_angle = normalize_angle(base_diff_angle + offset)
         # base_diff_offset_angle *= 0.1 # First round, we expect the base to stuck for the first round, so only turn a little, so don't waste much time.
         ret = await switch_mode_future
         self.get_logger().info(f"switch pos RET {ret} ")
         self.info(f"Initial angle offset: {base_diff_offset_angle}")
 
-
         while abs(base_diff_offset_angle) > 0.03:
 
             # let's do min 0.1 max 1.0
-            clamped_cmd_mag =max( min( abs(base_diff_offset_angle * 0.5 ) , 1.0) , 0.08)
+            clamped_cmd_mag = max(min(abs(base_diff_offset_angle * 0.5), 1.0), 0.08)
 
             cmd_twist = Twist()
             cmd_twist.angular.z = clamped_cmd_mag * sign(base_diff_offset_angle)
@@ -779,16 +830,17 @@ class GoalMover(Node):
 
             loc_base = self.get_point_in_frame(target_point, self.robot_baseframe)
 
-            self.marker_pub.publish(MakeCylinderMarker(id=101 , pos=loc_base.point , header= loc_base.header,diameter=0.08))
+            self.marker_pub.publish(
+                MakeCylinderMarker(id=101,
+                                   pos=loc_base.point,
+                                   header=loc_base.header,
+                                   diameter=0.08))
 
-            base_diff_angle = math.atan2(loc_base.point.y , loc_base.point.x)
+            base_diff_angle = math.atan2(loc_base.point.y, loc_base.point.x)
             base_diff_offset_angle = normalize_angle(base_diff_angle + offset)
-
 
         # Finish off with a 0 speed.
         self.cmd_vel_pub.publish(Twist())
-
-
 
     # async def turn_base_into_plant(self ,loc_world , offset = math.pi/2):
     #     self.get_logger().warn("switching to traj mode ")
@@ -841,8 +893,6 @@ class GoalMover(Node):
     #         self.get_logger().info(f"Failed to turn base into target heading.")
     #         raise RuntimeError("Cannot Turn the base into watering area.")
 
-
-
     async def pour_water_action(self):
         # joint_wrist_pitch 0 -> -0.486
         # Lift delta + 0.1581
@@ -862,11 +912,10 @@ class GoalMover(Node):
         arm_delta = 0.052801
         pitch_target = -0.69
 
-
         time_delta = 2.0
         current_time = 0.0
         traj_goal = FollowJointTrajectory.Goal()
-        traj_goal.trajectory.joint_names = ["joint_lift", "wrist_extension" , "joint_wrist_pitch"]
+        traj_goal.trajectory.joint_names = ["joint_lift", "wrist_extension", "joint_wrist_pitch"]
 
         current_time += 0.2
         # Add current location in
@@ -888,7 +937,6 @@ class GoalMover(Node):
         j_p.time_from_start = self.build_duration(current_time)
         traj_goal.trajectory.points.append(j_p)
 
-
         # Pause a little
         # current_time += 0.5
         # j_p.time_from_start = self.build_duration(current_time)
@@ -900,7 +948,7 @@ class GoalMover(Node):
         # j_p.time_from_start = self.build_duration(current_time)
         # traj_goal.trajectory.points.append(j_p)
 
-        current_time += time_delta -0.1
+        current_time += time_delta - 0.1
         # Add current location in
         j_p = JointTrajectoryPoint()
         j_p.positions = [lift_init, arm_init, pitch_init]
@@ -911,7 +959,6 @@ class GoalMover(Node):
         ]
         j_p.time_from_start = self.build_duration(current_time)
         traj_goal.trajectory.points.append(j_p)
-
 
         result: FollowJointTrajectory.Result
         status, result = await self.ActionSendAwait(
@@ -928,9 +975,7 @@ class GoalMover(Node):
             raise
         return True
 
-
-
-    def get_point_in_frame(self, target_point , frame_name):
+    def get_point_in_frame(self, target_point, frame_name):
         # Re compute the target location in robot's frame.
         for i in range(5):
             loc_in_ee = self.try_transform(target_point, frame_name)
@@ -941,53 +986,55 @@ class GoalMover(Node):
             self.get_logger().info(f"Time out getting transform")
             raise RuntimeError(f"Timeout getting point {target_point} into frame {frame_name}")
 
-
     async def ResetCamera(self):
         self.info("Resetting camera ")
-        await self.move_multi_joint(["joint_head_pan","joint_head_tilt"] , [0.0, -0.55])
+        await self.move_multi_joint(["joint_head_pan", "joint_head_tilt"], [0.0, -0.55])
 
-    async def camera_look_at_object(self , loc_world):
+    async def camera_look_at_object(self, loc_world):
         # link_head_pan
-        loc_pan = self.get_point_in_frame(loc_world , "link_head_pan")
+        loc_pan = self.get_point_in_frame(loc_world, "link_head_pan")
         pan_angle = get_z_angle_to_point(loc_pan.point)
-        self.info(f"Turning camera to look at relative point {loc_pan} , computed angle {pan_angle}")
-        await self.move_single_joint_delta("joint_head_pan" , pan_angle)
+        self.info(
+            f"Turning camera to look at relative point {loc_pan} , computed angle {pan_angle}")
+        await self.move_single_joint_delta("joint_head_pan", pan_angle)
 
-        loc_tilt = self.get_point_in_frame(loc_world , "link_head_tilt")
+        loc_tilt = self.get_point_in_frame(loc_world, "link_head_tilt")
         tilt_angle = get_z_angle_to_point(loc_tilt.point)
-        self.info(f"Turning camera to look at relative point {loc_tilt} , computed angle {tilt_angle}")
-        await self.move_single_joint_delta("joint_head_tilt" , tilt_angle)
-
+        self.info(
+            f"Turning camera to look at relative point {loc_tilt} , computed angle {tilt_angle}")
+        await self.move_single_joint_delta("joint_head_tilt", tilt_angle)
 
         # link_head_tilt
 
-        self.move_multi_joint(["joint_head_pan","joint_head_tilt"] , [0.0, -0.5])
+        self.move_multi_joint(["joint_head_pan", "joint_head_tilt"], [0.0, -0.5])
 
-    async def camera_scan_around(self, pan_delta = 0.5 , tilt_delta = 0.4,  velocity = 0.18):
+    async def camera_scan_around(self, pan_delta=0.5, tilt_delta=0.4, velocity=0.18):
         # Scan camera around current pointed location.
         # Pan scan
         self.info(f"Scanning camera around with pan detla {pan_delta} , tilt delta {tilt_delta}")
         current_pan = self.js_map["joint_head_pan"]
         current_tilt = self.js_map["joint_head_tilt"]
         # Pan range -4.04 1.73
-        pan_left = min ( current_pan + pan_delta , 1.6)
-        pan_right = max ( current_pan - pan_delta , -4.04)
-        await self.move_single_joint("joint_head_pan" , pan_left , velocity= velocity )
-        await self.move_single_joint("joint_head_pan" , pan_right , velocity= velocity )
-        await self.move_single_joint("joint_head_pan" , current_pan , velocity= velocity )
+        pan_left = min(current_pan + pan_delta, 1.6)
+        pan_right = max(current_pan - pan_delta, -4.04)
+        await self.move_single_joint("joint_head_pan", pan_left, velocity=velocity)
+        await self.move_single_joint("joint_head_pan", pan_right, velocity=velocity)
+        await self.move_single_joint("joint_head_pan", current_pan, velocity=velocity)
 
         if tilt_delta < .05:
-            return 
+            return
         time.sleep(0.5)
         # tilt range 0.49 -2.02
-        tilt_up = min ( current_tilt + tilt_delta , 0.45)
-        tilt_down = max ( current_tilt - tilt_delta , -1.8)
-        await self.move_single_joint("joint_head_tilt" , tilt_up , velocity= velocity )
-        await self.move_single_joint("joint_head_tilt" , tilt_down , velocity= velocity )
-        await self.move_single_joint("joint_head_tilt" , current_tilt , velocity= velocity )
+        tilt_up = min(current_tilt + tilt_delta, 0.45)
+        tilt_down = max(current_tilt - tilt_delta, -1.8)
+        await self.move_single_joint("joint_head_tilt", tilt_up, velocity=velocity)
+        await self.move_single_joint("joint_head_tilt", tilt_down, velocity=velocity)
+        await self.move_single_joint("joint_head_tilt", current_tilt, velocity=velocity)
 
-
-    def build_rot_traj(self ,target_angle : float , angular_vel = 0.2 , total_duration = None ) -> MultiDOFJointTrajectory:
+    def build_rot_traj(self,
+                       target_angle: float,
+                       angular_vel=0.2,
+                       total_duration=None) -> MultiDOFJointTrajectory:
 
         traj = MultiDOFJointTrajectory()
         traj.joint_names.append("position")
@@ -995,13 +1042,11 @@ class GoalMover(Node):
         if total_duration is None:
             total_duration = abs(target_angle) / angular_vel
 
-
         # self.get_logger().info(f"Current angle {current_angle}")
         traj_point = MultiDOFJointTrajectoryPoint()
         traj_point.transforms.append(self.build_turning_tf(0.0))
         traj_point.time_from_start = self.build_duration(0)
         traj.points.append(traj_point)
-
 
         # Add a final dot that is the final dest angle.
         traj_point = MultiDOFJointTrajectoryPoint()
@@ -1013,38 +1058,47 @@ class GoalMover(Node):
         self.get_logger().info(f"traj length {len(traj.points)}")
         return traj
 
-    def build_duration(self,sec:float) ->DurationMsg:
-        return DurationMsg(sec = int(sec) ,nanosec = int((sec%1) * 1e9 ) )
+    def build_duration(self, sec: float) -> DurationMsg:
+        return DurationMsg(sec=int(sec), nanosec=int((sec % 1) * 1e9))
 
-    def build_turning_tf(self,angle)->Transform:
+    def build_turning_tf(self, angle) -> Transform:
         goal_tf = Transform()
-        q = tf_transformations.quaternion_from_euler(0,0,angle)
+        q = tf_transformations.quaternion_from_euler(0, 0, angle)
         goal_tf.rotation.x = q[0]
         goal_tf.rotation.y = q[1]
         goal_tf.rotation.z = q[2]
         goal_tf.rotation.w = q[3]
         return goal_tf
 
-    async def move_single_joint_delta(self , joint_name :str , delta : float , duration = 1.0 , fail_able = False) -> bool:
+    async def move_single_joint_delta(self,
+                                      joint_name: str,
+                                      delta: float,
+                                      duration=1.0,
+                                      fail_able=False) -> bool:
         actual_target = self.js_map[joint_name] + delta
-        return await self.move_single_joint(joint_name , actual_target, duration , fail_able=fail_able)
+        return await self.move_single_joint(joint_name,
+                                            actual_target,
+                                            duration,
+                                            fail_able=fail_able)
 
-
-    async def move_single_joint(self,joint_name :str , target : float , duration = 1.0 , velocity = None, fail_able = False) -> bool:
+    async def move_single_joint(self,
+                                joint_name: str,
+                                target: float,
+                                duration=1.0,
+                                velocity=None,
+                                fail_able=False) -> bool:
         traj_goal = FollowJointTrajectory.Goal()
 
         # Add current location in
         traj_goal.trajectory.joint_names.append(joint_name)
 
         if velocity is None:
-            velocity = (target -  self.js_map[joint_name]) / duration
+            velocity = (target - self.js_map[joint_name]) / duration
         else:
-            duration = abs((target -  self.js_map[joint_name]) / velocity)
+            duration = abs((target - self.js_map[joint_name]) / velocity)
 
-        if sign(velocity) != sign(target -  self.js_map[joint_name]):
+        if sign(velocity) != sign(target - self.js_map[joint_name]):
             velocity = -velocity
-
-        
 
         self.info(f"moving {joint_name} to {target} over {duration}s")
         j_p = JointTrajectoryPoint()
@@ -1057,7 +1111,6 @@ class GoalMover(Node):
         j_p.velocities.append(velocity)
         j_p.time_from_start = self.build_duration(duration)
         traj_goal.trajectory.points.append(j_p)
-
 
         result: FollowJointTrajectory.Result
         status, result = await self.ActionSendAwait(
@@ -1078,14 +1131,21 @@ class GoalMover(Node):
             return False
         return True
 
-
-    async def move_multi_joint_delta( self,joint_names :str , delta_targets : float , duration = 1.0 , fail_able = False)->bool:
+    async def move_multi_joint_delta(self,
+                                     joint_names: str,
+                                     delta_targets: float,
+                                     duration=1.0,
+                                     fail_able=False) -> bool:
         target_list = []
-        for name, delta in zip(joint_names , delta_targets):
+        for name, delta in zip(joint_names, delta_targets):
             target_list.append(self.js_map[name] + delta)
-        return await self.move_multi_joint(joint_names , target_list , duration , fail_able)
+        return await self.move_multi_joint(joint_names, target_list, duration, fail_able)
 
-    async def move_multi_joint(self,joint_names :str , targets : float , duration = 1.0 , fail_able = False)->bool:
+    async def move_multi_joint(self,
+                               joint_names: str,
+                               targets: float,
+                               duration=1.0,
+                               fail_able=False) -> bool:
         self.info(f"moving \n{joint_names} to \n{targets} over {duration}s")
 
         traj_goal = FollowJointTrajectory.Goal()
@@ -1103,7 +1163,6 @@ class GoalMover(Node):
             j_p.positions.append(t)
         j_p.time_from_start = self.build_duration(duration)
         traj_goal.trajectory.points.append(j_p)
-
 
         result: FollowJointTrajectory.Result
         status, result = await self.ActionSendAwait(
@@ -1124,12 +1183,18 @@ class GoalMover(Node):
             return False
         return True
 
-    def apply_transform(self,point:PointStamped, transform:TransformStamped):
+    def apply_transform(self, point: PointStamped, transform: TransformStamped):
         # Extract the translation from the Transform message
-        translation = np.array([transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z])
+        translation = np.array([
+            transform.transform.translation.x, transform.transform.translation.y,
+            transform.transform.translation.z
+        ])
 
         # Extract the rotation (quaternion) from the Transform message
-        rotation = [transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z, transform.transform.rotation.w]
+        rotation = [
+            transform.transform.rotation.x, transform.transform.rotation.y,
+            transform.transform.rotation.z, transform.transform.rotation.w
+        ]
 
         # Convert the point to a numpy array
         point_vector = np.array([point.point.x, point.point.y, point.point.z])
@@ -1149,37 +1214,34 @@ class GoalMover(Node):
 
         return transformed_point_msg
 
-
-    def try_transform_tf(self,point_stamp : PointStamped , target_frame):
+    def try_transform_tf(self, point_stamp: PointStamped, target_frame):
         try:
-            return self._tf_buffer.transform(point_stamp , target_frame)
+            return self._tf_buffer.transform(point_stamp, target_frame)
         except Exception as ex:
             self.get_logger().warn(f"failed to get transform, {ex}")
             return None
 
-
-    def try_transform(self,point_stamp : PointStamped , target_frame) -> Optional[PointStamped]:
-
+    def try_transform(self, point_stamp: PointStamped, target_frame) -> Optional[PointStamped]:
 
         try:
-            tf = self._tf_buffer.lookup_transform(
-                target_frame=target_frame,
-                source_frame=point_stamp.header.frame_id,
-                time=rclpy.time.Time())
-            return self.apply_transform(point_stamp , tf)
+            tf = self._tf_buffer.lookup_transform(target_frame=target_frame,
+                                                  source_frame=point_stamp.header.frame_id,
+                                                  time=rclpy.time.Time())
+            return self.apply_transform(point_stamp, tf)
         except Exception as ex:
             self.get_logger().warn(f"failed to get transform, {ex}")
             return None
-
 
     def get_wrist_extension_js(self):
-        return self.js_map["joint_arm_l3"]+self.js_map["joint_arm_l2"]+self.js_map["joint_arm_l1"]+self.js_map["joint_arm_l0"]
+        return self.js_map["joint_arm_l3"] + self.js_map["joint_arm_l2"] + self.js_map[
+            "joint_arm_l1"] + self.js_map["joint_arm_l0"]
 
     def clear_marker(self, marker_id):
         m = Marker()
         m.id = marker_id
         m.action = Marker.DELETEALL
         self.pub_marker(m)
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -1197,7 +1259,6 @@ def main(args=None):
         node.get_logger().info('interrupt received, so shutting down')
 
     rclpy.shutdown()
-
 
 
 if __name__ == "__main__":

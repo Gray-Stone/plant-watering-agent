@@ -1,6 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+
+"""  
+This file contain the basic_depth_process node which combine the depth image and yolo detection mask
+to register the object's location in the world. It simply uses the centroid location of the mask and 
+find out that pixel's location in space using depth image.
+
+This node also maintain a list of previously seen objects. Newly seen objects are merged into this list 
+if its location is within X amount of existing ones. The known object list will only increase, and the id
+will be the same as its index.
+
+
+
+"""
+
 import copy
 import dataclasses
 
@@ -30,15 +44,14 @@ from ultralytics import YOLO
 from vision_msgs.msg import (Detection2D, Detection2DArray,
                              ObjectHypothesisWithPose)
 from visualization_msgs.msg import Marker, MarkerArray
+from stretch_mover_utils.grid_utils import COLOR_MSG_LIST_RGBW
+# Flip the order so it's 0 green, 1 blue.
 
-CLASS_COLORS = [(0.1,0.1,0.9),
-                (0.1,0.9,0.1)]
 
 
 def ClassToColor(class_id , a= 1.0):
-    color = CLASS_COLORS[class_id]
-
-    return ColorRGBA(r=color[0], g=color[1], b=color[2], a=a)
+    # this way, 0 is green, 1 is blue 
+    return COLOR_MSG_LIST_RGBW[class_id+1]
 
 @dataclasses.dataclass
 class ObjectRecord():
@@ -53,7 +66,7 @@ class ObjectRecord():
         dz = new_point.z - self.world_loc.point.z
         distance = np.sqrt(dx**2 + dy**2 + dz**2)
         if distance < threshold:
-            # Not just averaging between new and old. It's like a rolling average. 
+            # Not just averaging between new and old. It's like a rolling average.
             # the btm number is the size of rolling window.
             self.world_loc.point.x += dx / self.MERGE_DELAY
             self.world_loc.point.y += dy / self.MERGE_DELAY
@@ -166,12 +179,12 @@ class DepthProcessor(Node):
 
         obj_list = KnownObjectList()
         for idx , record in enumerate(self.known_object_list):
-            
+
             # Actually recording and passing it to others.
             obj = KnownObject(id = idx , object_class = record.class_id)
             obj.space_loc = record.world_loc
             obj_list.objects.append(obj)
-            
+
             # This is for visulizing
             visual_marker.points.append(record.world_loc.point)
             visual_marker.colors.append(ClassToColor(record.class_id , a=0.9))
@@ -179,10 +192,6 @@ class DepthProcessor(Node):
 
     def depth_process_cb(self,camera_info_msg:CameraInfo , depth_msg: Image ,yolo_dec_list: YoloDetectionList):
 
-        # if self.debug:
-        #     self.get_logger().error(f"Header camera info {camera_info_msg.header}")
-        #     self.get_logger().error(f"Header depth_msg {depth_msg.header}")
-        #     self.get_logger().error(f"Header yolo_dec {yolo_dec_list.header}")
 
         depth_world_tf =self.GetTF(self.world_frame , depth_msg.header.frame_id , depth_msg.header.stamp)
         if depth_world_tf is None:
@@ -210,11 +219,6 @@ class DepthProcessor(Node):
             dec : YoloDetection
             mask_img = self.bridge.imgmsg_to_cv2(dec.mask , desired_encoding="mono8")
 
-            # Do some basic process to help with image quality.
-            # kernel = np.ones((3, 3), np.uint8)
-            # opened_mask = cv2.morphologyEx(mask_img, cv2.MORPH_OPEN, kernel)
-            # closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel)
-            # dilated_mask = cv2.dilate(closed_mask,kernel,iterations = 1)
 
             m = cv2.moments(mask_img , binaryImage=True)
 
@@ -262,7 +266,7 @@ class DepthProcessor(Node):
             else:
                 # stamp from tf look up is same as depth message.
                 self.known_object_list.append(ObjectRecord( world_point, dec.class_id))
-            
+
             # TODO publish the whole list, also indicate which one is live and seen in frame.
 
         # Now we publish the point as visual message.

@@ -68,3 +68,9 @@ coco2yolo-seg/COCO2YOLO-merge.py Datas/open-images_7/Open_Images_7/labels.json D
 There are two ways of using the subset: 
 
 Use a pre-trained pot only weights and continue training, or directly train a new one with it.
+
+Here is an example for extending the model 
+```
+plant-watering-agent/plant_detection/yolo_expand_pretrain.py pot_only_bestweight.pt cvat-wateringarea-data/dataset.yaml --proj cont-watering-area-pot
+```
+

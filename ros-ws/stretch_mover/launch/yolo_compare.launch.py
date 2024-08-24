@@ -38,7 +38,7 @@ def generate_launch_description():
         'max_depth_range': 3.0,
         "world_frame": "map",
 
-        # "debug": True,
+        "debug": True,
         # "verbose": True,
     }
 
@@ -53,7 +53,7 @@ def generate_launch_description():
                  }],
                  output='screen',
                  namespace=ns,
-                 remappings=[('/camera/color/image_raw', ns + '/camera/color/image_raw')]))
+                 remappings=[(ns + '/camera/color/image_raw' , '/camera/color/image_raw')]))
 
 
     return LaunchDescription(nodes)

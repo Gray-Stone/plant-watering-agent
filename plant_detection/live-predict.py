@@ -150,6 +150,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # parser.add_argument("target_img_dir" , type=pathlib.Path ,help="path to Yolo yaml file")
     parser.add_argument("model", type=str ,help="model-file")
+    parser.add_argument("--m2", type=str ,help="model-file")
+    parser.add_argument("--m3", type=str ,help="model-file")
+
     parser.add_argument("--window-name", type=str ,help="window_name")
     parser.add_argument("--image" , help="Use image instead of cv" , default=None)
     args = parser.parse_args()
@@ -164,7 +167,7 @@ if __name__ == "__main__":
             raise IOError("Cannot open webcam")
     window_name = args.window_name 
     if window_name is None:
-        window_name = "labeled_image"
+        window_name = pathlib.Path(args.model).stem
 
     # cv2.namedWindow("input" , cv2.WINDOW_NORMAL)
     cv2.namedWindow(window_name , cv2.WINDOW_NORMAL)
@@ -180,6 +183,8 @@ if __name__ == "__main__":
             frame = cv2.imread(args.image)
         else:
             ret, frame = cap.read()
+
+        frame = cv2.rotate(frame,cv2.ROTATE_90_CLOCKWISE)
 
         obj_info_map , obj_info_list = detector.DetectOnce(frame)
 

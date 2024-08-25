@@ -245,7 +245,8 @@ class OccupancyGridHelper():
                     frontier_cells.append(n)
                     continue
 
-                clear , check_cells =self.CheckEmptyCircle(n , clearance_rad_grid)
+                # clear , check_cells =self.CheckEmptyCircle(n , clearance_rad_grid)
+                clear , check_cells =self.CheckRingOccupied(n , clearance_rad_grid)
                 if not clear:
                     continue
                 # Not the cell is free, not near walls, and not visited. It can be expanded to.
@@ -268,11 +269,11 @@ class OccupancyGridHelper():
                 if debug_marker_pub_func is not None:
 
                     # debug_marker_pub_func(self.color_sphere_gen(check_cells , color=COLOR_MSG_LIST_RGBW[0] , id=15))
-                    debug_marker_pub_func(self.color_sphere_gen(wave_front , id=12))
+                    debug_marker_pub_func(self.color_sphere_gen(wave_front ))
                     debug_marker_pub_func(self.color_sphere_gen(frontier_cells , scale=self.meter_per_cell * 1.6))
 
         if debug_marker_pub_func is not None:
-            debug_marker_pub_func(self.color_sphere_gen(wave_front , id=12))
+            debug_marker_pub_func(self.color_sphere_gen(wave_front))
             debug_marker_pub_func(self.color_sphere_gen(frontier_cells , scale=self.meter_per_cell * 1.6))
         return frontier_cells
         # If a clear cell have its neighbor

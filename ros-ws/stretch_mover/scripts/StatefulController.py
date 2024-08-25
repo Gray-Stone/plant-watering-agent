@@ -111,6 +111,7 @@ class GoalMover(Node):
     
     POI_MARKER_ID = 99
     NAV_PLANED_LOC_MARKER_ID = 89
+    WAVE_FRONT_MARKER_ID = 34
 
     PLAN_GOAL_CLEARANCE_RADIUS = 0.4
     FRONTIER_REACHABLE_RADIUS = 0.22
@@ -180,8 +181,8 @@ class GoalMover(Node):
         # List of skipped pots
 
         self.state = self.CmdStates.IDLE
-        # self.state_update(self.CmdStates.EXPLORE_PLANNING)
-        self.state_update(self.CmdStates.PLANT_SELECTION)
+        self.state_update(self.CmdStates.EXPLORE_PLANNING)
+        # self.state_update(self.CmdStates.PLANT_SELECTION)
 
         # Time keeper for the pause state.
         self.pause_start_time = None
@@ -292,7 +293,6 @@ class GoalMover(Node):
 
 
             await self.switch_gamepad_service.call_async(TriggerSrv.Request())
-            raise RuntimeError ("DEBUG")
         elif self.state == self.CmdStates.PAUSE_BEFORE_NEXT:
             self.state_update(await self.pause_before_next_state())
         # TODO, maybe add a camera set, tilt of -0.7568123906306684 seems low and good for nav.
@@ -404,8 +404,8 @@ class GoalMover(Node):
         self.get_logger().info(f"ret from switch nav {ret} ")
 
         # Look around with camera
-        await self.move_single_joint("joint_head_tilt", -0.7, velocity=2.0 , fail_able= True)
-        # await self.camera_scan_around(pan_delta=1.4)
+        await self.move_single_joint("joint_head_tilt", -0.8, velocity=1.0 , fail_able= True)
+        await self.camera_scan_around(pan_delta=1.8 , velocity=0.4)
 
         # Need to give time for map to update
         time.sleep(1.0)
@@ -424,7 +424,13 @@ class GoalMover(Node):
             raise RuntimeError(f"Can not get robot's base location in map frame!")
         self.info(f"Current robot location {robot_start_point}")
         with self.map_lock:
-            frontier_cells = self.map_helper.find_reachable_frontiers(robot_start_point , self.FRONTIER_REACHABLE_RADIUS , self.pub_marker)
+            
+            # This way we set id from here.
+            def pub_cb(m:Marker):
+                m.id = self.WAVE_FRONT_MARKER_ID
+                self.pub_marker(m)
+
+            frontier_cells = self.map_helper.find_reachable_frontiers(robot_start_point , self.FRONTIER_REACHABLE_RADIUS , pub_cb)
             self.info(f"Got {len(frontier_cells)} frontier cells")
             goal_point = None
             # We skip all cells that's under robot.
@@ -435,10 +441,10 @@ class GoalMover(Node):
                 if distance > self.PLAN_GOAL_CLEARANCE_RADIUS:
                     goal_point = cell_in_world
                     # We make a heading for this goal.
-                    # Point robot back into where it was. 
+                    # Point robot back to source + 90 deg
                     diff_x = robot_start_point.point.x - goal_point.x
                     diff_y = robot_start_point.point.y - goal_point.y
-                    heading_back_to_start = math.atan2(diff_y, diff_x)
+                    heading_back_to_start = normalize_angle(math.atan2(diff_y, diff_x) + math.pi)
 
                     # Check if this goal is plan-able
                     maybe_plan_goal = await self.plan_nav_to_pose(goal_point,heading_back_to_start)
@@ -451,6 +457,7 @@ class GoalMover(Node):
         if goal_point is None:
             self.info("|| =============== EXPLORE ALL FINISHED! ================= ||\n"
             "no more valid frontier")
+            self.clear_marker(self.WAVE_FRONT_MARKER_ID)
             return self.CmdStates.IDLE
 
 
@@ -485,6 +492,9 @@ class GoalMover(Node):
             self.error("Going back and select next plant.")
             return self.CmdStates.PAUSE_BEFORE_NEXT
 
+        self.clear_marker(self.POI_MARKER_ID)
+        self.clear_marker(self.NAV_PLANED_LOC_MARKER_ID)
+        self.clear_marker(self.WAVE_FRONT_MARKER_ID)
         return self.CmdStates.EXPLORE_PLANNING
 
 
@@ -1090,7 +1100,7 @@ class GoalMover(Node):
 
     async def ResetCamera(self):
         self.info("Resetting camera ")
-        await self.move_multi_joint(["joint_head_pan", "joint_head_tilt"], [0.0, -0.55])
+        await self.move_multi_joint(["joint_head_pan", "joint_head_tilt"], [0.0, -0.65])
 
     async def camera_look_at_object(self, loc_world):
         # link_head_pan

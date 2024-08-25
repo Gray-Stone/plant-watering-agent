@@ -55,13 +55,16 @@ def generate_launch_description():
         PythonLaunchDescriptionSource([stretch_mover_share, "/launch/nav2.launch.py"]))
 
     # These are things that needs to use yolo.
-    model_path = str(Path(stretch_mover_share) / "models/seg-water-pot-new.pt")
+
+    # This one have way too much false positive
+    # model_path = str(Path(stretch_mover_share) / "models/lamb_10kpot_cont_watering_area_2.pt") 
+    model_path = str(Path(stretch_mover_share) / "models/lamb_watering_pot_2.pt")
 
     yolo_params = {
         'input_topic': '/camera/color/image_raw',
         'aligned_depth_topic': '/camera/aligned_depth_to_color/image_raw',
         'camera_info_topic': '/camera/color/camera_info',
-        "conf_thres": 0.4,
+        "conf_thres": 0.6,
         'yolo_model': model_path,
         'yolo_result_topic': '/yolo_ros/detections',
         'result_image_topic': '/camera/color/yolo_result_image',

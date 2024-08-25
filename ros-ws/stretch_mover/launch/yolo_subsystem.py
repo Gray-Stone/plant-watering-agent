@@ -12,7 +12,7 @@ from pathlib import Path
 def generate_launch_description():
     stretch_mover_share = get_package_share_directory('stretch_mover')
 
-    model_path = str(Path(stretch_mover_share) / "models/seg-water-pot-new.pt")
+    model_path = str(Path(stretch_mover_share) / "models/lamb_10kpot_cont_watering_area_2.pt")
 
     yolo_params = {
         'input_topic': '/camera/color/image_raw',

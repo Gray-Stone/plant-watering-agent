@@ -16,6 +16,7 @@ import rclpy
 from builtin_interfaces.msg import Duration as DurationMsg
 from builtin_interfaces.msg import Time as RosTime
 from geometry_msgs.msg import Point, PointStamped, TransformStamped, Transform, Vector3, PoseStamped, Pose, Twist
+from geometry_msgs.msg import Quaternion
 from nav2_msgs.action import ComputePathToPose, FollowPath, NavigateToPose
 from nav_msgs.msg import MapMetaData, OccupancyGrid
 
@@ -41,14 +42,11 @@ from collections import deque
 from trajectory_msgs.msg import MultiDOFJointTrajectory, MultiDOFJointTrajectoryPoint, JointTrajectory, JointTrajectoryPoint
 
 from stretch_mover_utils.grid_utils import OccupancyGridHelper, COLOR_MSG_LIST_RGBW
+from stretch_mover_utils.marker_helper import MakeTextMarker , MakeCylinderMarker, MakeSphereMaker
 
 from control_msgs.action import FollowJointTrajectory
-# COLOR_MSG_LIST_RGBW = [
-#     ColorRGBA(r=1.0,b=0.0,g=0.0,a=1.0),
-#     ColorRGBA(r=0.0,b=0.0,g=1.0,a=1.0),
-#     ColorRGBA(r=0.0,b=1.0,g=0.0,a=1.0),
-#     ColorRGBA(r=1.0,b=1.0,g=1.0,a=1.0),
-# ]
+
+from threading import Lock
 
 
 def get_z_angle_to_point(point: Point):
@@ -83,53 +81,6 @@ def map_marker_check(map_helper: OccupancyGridHelper) -> Marker:
     return map_helper.color_sphere_gen(locs, scale=0.03)
 
 
-def MakeSphereMaker(id, pos: Point, header, color: ColorRGBA = ColorRGBA(r=1.0, a=1.0)) -> Marker:
-    m = Marker()
-    m.header = header
-    m.type = Marker.SPHERE
-    m.id = id
-    m.pose.position = pos
-    m.color = color
-    m.scale.x = 0.1
-    m.scale.y = 0.1
-    m.scale.z = 0.1
-    return m
-
-
-def MakeCylinderMarker(id,
-                       pos: Point,
-                       header,
-                       color=ColorRGBA(r=1.0, g=0.2, b=1.0, a=1.0),
-                       diameter=0.02,
-                       height=1.8,
-                       alpha=0.9) -> Marker:
-    m = Marker()
-    m.header = header
-    m.type = Marker.CYLINDER
-    m.id = id
-    m.pose.position = pos
-    m.pose.position.z += height / 2
-    m.color = color
-    m.color.a = alpha
-    m.scale.x = diameter
-    m.scale.y = diameter
-    m.scale.z = height
-    return m
-
-
-def MakeTextMarker(id,
-                   data: str,
-                   pos: PointStamped,
-                   color=ColorRGBA(r=0.8, g=0.4, b=1.0, a=1.0),
-                   scale=0.3) -> Marker:
-    m = Marker()
-    m.header = pos.header
-    m.type = Marker.TEXT_VIEW_FACING
-    m.id = id
-    m.pose.position = pos.point
-    m.color = color
-    m.scale.z = scale
-
 
 class ModeSwitchNode(Node):
 
@@ -157,11 +108,12 @@ class GoalMover(Node):
 
     PLANT_CLASS_ID = 0
     WATERING_AREA_CLASS_ID = 1
-
+    
     POI_MARKER_ID = 99
     NAV_PLANED_LOC_MARKER_ID = 89
 
     PLAN_GOAL_CLEARANCE_RADIUS = 0.4
+    FRONTIER_REACHABLE_RADIUS = 0.22
     MAX_PLAN_OFFSET_RADIUS = 1.1  # arm length is 0.52
     MIN_PLAN_OFFSET_RADIUS = 0.55  # We want to have some distance so arm could extend
     POT_TO_WATERING_DIS_THRESHOLD = 0.24
@@ -172,6 +124,9 @@ class GoalMover(Node):
         IDLE = enum.auto()
 
         # If all prefect, states should only linearly go down.
+        EXPLORE_PLANNING = enum.auto()
+        EXPLORE = enum.auto()
+
         PAUSE_BEFORE_NEXT = enum.auto()
         # If any of the following state failed, should jump to pause (instead of plant select for next plant)
         PLANT_SELECTION = enum.auto()
@@ -212,18 +167,21 @@ class GoalMover(Node):
         #### Member Vars
         self.map_helper: OccupancyGridHelper = None
         self.known_obj_list: KnownObjectList = None
+        self.skipped_pot_objects: deque[KnownObject] = deque()
         self.js_map: dict[str, float] = {}
+        
         self.next_planning_object_idx = 0
+        self.current_frontier_pose :  PoseStamped = None 
         self.current_chasing_plant: KnownObject = None
         self.current_watering_obj: KnownObject = None
-
-        # List of skipped pots
-        self.skipped_pot_objects: deque[KnownObject] = deque()
-
         self.successful_planned_pose: PoseStamped = None
 
+        self.map_lock = Lock() # Specially when frontier expanding, Lock is necessary.
+        # List of skipped pots
+
         self.state = self.CmdStates.IDLE
-        self.state_update(self.CmdStates.PAUSE_BEFORE_NEXT)
+        # self.state_update(self.CmdStates.EXPLORE_PLANNING)
+        self.state_update(self.CmdStates.PLANT_SELECTION)
 
         # Time keeper for the pause state.
         self.pause_start_time = None
@@ -288,8 +246,8 @@ class GoalMover(Node):
     def global_map_cb(self, map_msg: OccupancyGrid):
         # print(f"\n\n ================== ")
         # print(f"Got map , header {map_msg.header} , info {map_msg.info}")
-
-        self.map_helper = OccupancyGridHelper(map_msg)
+        with self.map_lock:
+            self.map_helper = OccupancyGridHelper(map_msg)
         # Map data: -1 unknown, 0 free, 100 occupied.
         # For debug purpose.
         # self.pub_marker(map_marker_check(self.map_helper))
@@ -323,8 +281,18 @@ class GoalMover(Node):
         # This is the main logic.
         if self.state == self.CmdStates.IDLE:
             # Do nothing in idle state.
+            # Depends on what user service call is sent, then switch to the correct state.
             return
 
+        elif self.state == self.CmdStates.EXPLORE_PLANNING:
+            self.state_update(await self.explore_planning_state())
+            
+        elif self.state == self.CmdStates.EXPLORE:
+            self.state_update(await self.explore_state())
+
+
+            await self.switch_gamepad_service.call_async(TriggerSrv.Request())
+            raise RuntimeError ("DEBUG")
         elif self.state == self.CmdStates.PAUSE_BEFORE_NEXT:
             self.state_update(await self.pause_before_next_state())
         # TODO, maybe add a camera set, tilt of -0.7568123906306684 seems low and good for nav.
@@ -387,6 +355,15 @@ class GoalMover(Node):
         # if res.status != GoalStatus.STATUS_SUCCEEDED:
         return res.status, res.result
 
+    def NavStartupMap(self) -> bool:
+        if self.map_helper is None:
+            self.get_logger().warn(f"Skipping cycle for missing map")
+            return False
+        if ("joint_lift" not in self.js_map) or ("joint_wrist_yaw" not in self.js_map):
+            self.get_logger().warn(f"Skipping cycle for no joint states")
+            return False
+        return True
+
     def StartupCheck(self) -> bool:
         # effectively skip to next cycle if these are none
         if self.map_helper is None:
@@ -417,6 +394,100 @@ class GoalMover(Node):
 
         self.error(f"Cannot find the same object with existing id, given {object.id}")
         raise
+
+    async def explore_planning_state(self):
+        if not self.NavStartupMap():
+            return self.CmdStates.EXPLORE_PLANNING
+
+        self.get_logger().info(f"switching to nav mode")
+        ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
+        self.get_logger().info(f"ret from switch nav {ret} ")
+
+        # Look around with camera
+        await self.move_single_joint("joint_head_tilt", -0.7, velocity=2.0 , fail_able= True)
+        # await self.camera_scan_around(pan_delta=1.4)
+
+        # Need to give time for map to update
+        time.sleep(1.0)
+
+        # Find a spot to frontier over.
+        # Need to know where robot is.
+        self.info(f"Getting current robot loc")
+        robot_start_point: PointStamped
+        for i in range(3):
+            maybe_robot_point = self.try_get_robot_point(self.map_helper.map_frame)
+            if maybe_robot_point is not None:
+                robot_start_point = maybe_robot_point
+                break
+            time.sleep(0.5)
+        else:
+            raise RuntimeError(f"Can not get robot's base location in map frame!")
+        self.info(f"Current robot location {robot_start_point}")
+        with self.map_lock:
+            frontier_cells = self.map_helper.find_reachable_frontiers(robot_start_point , self.FRONTIER_REACHABLE_RADIUS , self.pub_marker)
+            self.info(f"Got {len(frontier_cells)} frontier cells")
+            goal_point = None
+            # We skip all cells that's under robot.
+            
+            for cell in frontier_cells:
+                cell_in_world =self.map_helper.map_loc_to_world_point(cell)
+                distance = point_point_distanec(cell_in_world , robot_start_point.point)
+                if distance > self.PLAN_GOAL_CLEARANCE_RADIUS:
+                    goal_point = cell_in_world
+                    # We make a heading for this goal.
+                    # Point robot back into where it was. 
+                    diff_x = robot_start_point.point.x - goal_point.x
+                    diff_y = robot_start_point.point.y - goal_point.y
+                    heading_back_to_start = math.atan2(diff_y, diff_x)
+
+                    # Check if this goal is plan-able
+                    maybe_plan_goal = await self.plan_nav_to_pose(goal_point,heading_back_to_start)
+                    if maybe_plan_goal is not None:
+                        self.successful_planned_pose = maybe_plan_goal
+                        self.info(f"FIND reachable and plan-able frontier: {maybe_plan_goal}")
+                        return self.CmdStates.EXPLORE
+
+
+        if goal_point is None:
+            self.info("|| =============== EXPLORE ALL FINISHED! ================= ||\n"
+            "no more valid frontier")
+            return self.CmdStates.IDLE
+
+
+
+    async def explore_state(self):
+                # First put robot in nav mode
+        self.get_logger().info(f"switching to nav mode")
+        ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
+        self.get_logger().info(f"ret from switch nav {ret} ")
+
+        # To ensure camera is looking where robot is going.
+        await self.ResetCamera()
+
+        nav_goal = NavigateToPose.Goal()
+        nav_goal.pose = self.successful_planned_pose
+        nav_goal.pose.header.stamp = self.get_clock().now().to_msg()
+        for i in range(3):
+            result: NavigateToPose.Result
+            status, result = await self.ActionSendAwait(
+                nav_goal,
+                self.navigate_to_pose_client,
+                # print_fb,
+            )
+            if status != GoalStatus.STATUS_SUCCEEDED:
+                self.get_logger().warn(f"Did not get successful goal result, got {status}")
+            else:
+                # This is the successful break condition.
+                break
+        else:
+            self.get_logger().error(
+                f"Repeated Failure trying to nav to {nav_goal.pose.pose.position}")
+            self.error("Going back and select next plant.")
+            return self.CmdStates.PAUSE_BEFORE_NEXT
+
+        return self.CmdStates.EXPLORE_PLANNING
+
+
 
     async def pause_before_next_state(self):
         if len(self.js_map) < 7:
@@ -484,7 +555,7 @@ class GoalMover(Node):
 
         self.get_logger().warn(f"Handling Object at index {self.next_planning_object_idx}")
 
-        maybe_goal_pose = await self.plan_to_point(self.current_chasing_plant.space_loc,
+        maybe_goal_pose = await self.plan_nav_to_obj_point(self.current_chasing_plant.space_loc,
                                                    self.MIN_PLAN_OFFSET_RADIUS,
                                                    self.MAX_PLAN_OFFSET_RADIUS)
 
@@ -715,7 +786,38 @@ class GoalMover(Node):
     async def lower_arm_to_nav(self):
         await self.move_single_joint("joint_lift", 0.28, duration=2.0)
 
-    async def plan_to_point(self, goal_point: PointStamped, min_proximity,
+    async def plan_nav_to_pose(self,point: Point , z_heading:float ) -> Optional[PoseStamped]:
+
+        pose_goal = self.make_ComputePathToPose_goal(point.x, point.y, z_heading)
+
+        goal_marker = MakeCylinderMarker(id=self.POI_MARKER_ID,
+                                            pos=pose_goal.goal.pose.position,
+                                            header=pose_goal.goal.header,
+                                            height=1.7)
+        self.pub_marker(goal_marker)
+
+        self.get_logger().info(f"Try nav planning to {pose_goal.goal.pose.position}")
+
+        planning_result: ComputePathToPose.Result
+        goal_status, planning_result = await self.ActionSendAwait(
+            pose_goal, self.compute_path_client)
+        if goal_status != GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().warn(
+                f"Did not get successful goal result, got {goal_status} with {planning_result}"
+            )
+            self.clear_marker(self.POI_MARKER_ID)
+            return None
+        else:
+            # This is the successful break condition.
+            # Get back the pose we have successfully planned for
+            self.get_logger().info(
+                f"Got a planned path to {point} , planning_time {planning_result.planning_time} "
+            )
+            return pose_goal.goal
+
+
+
+    async def plan_nav_to_obj_point(self, goal_point: PointStamped, min_proximity,
                             max_proximity) -> Optional[PoseStamped]:
 
         if goal_point.header.frame_id != self.map_helper.map_frame:
@@ -744,7 +846,7 @@ class GoalMover(Node):
         for ring_grid_rad in range(int(min_search_ring_grid_rad),
                                    int(max_search_ring_grid_rad) + 1):
             for maybe_coord in self.map_helper.GetRing(target_map_coord, ring_grid_rad):
-                maybe_valid, checked_coords = self.map_helper.CheckEmptyCircle(
+                maybe_valid,  checked_coords = self.map_helper.CheckEmptyCircle(
                     maybe_coord, check_cell_rad)
                 debug_marker = self.map_helper.color_sphere_gen(checked_coords,
                                                                 id=self.NAV_PLANED_LOC_MARKER_ID,
@@ -1220,6 +1322,22 @@ class GoalMover(Node):
         except Exception as ex:
             self.get_logger().warn(f"failed to get transform, {ex}")
             return None
+
+    def try_get_robot_point(self , source_frame:str):
+        try:
+            tf = self._tf_buffer.lookup_transform(target_frame=source_frame,
+                                                  source_frame=self.robot_baseframe,
+                                                  time=rclpy.time.Time())
+            p = PointStamped()
+            p.point.x = tf.transform.translation.x
+            p.point.y = tf.transform.translation.y
+            p.point.z = tf.transform.translation.z
+            p.header = tf.header
+            return p
+        except Exception as ex:
+            self.get_logger().warn(f"failed to get transform, {ex}")
+            return None
+
 
     def try_transform(self, point_stamp: PointStamped, target_frame) -> Optional[PointStamped]:
 

@@ -9,16 +9,16 @@ from rclpy.time import Time
 
 
 
-def MakeSphereMaker(id, pos: Point, header, color: ColorRGBA = ColorRGBA(r=1.0, a=1.0)) -> Marker:
+def MakeSphereMaker(id, pos: Point, header, color: ColorRGBA = ColorRGBA(r=1.0, a=1.0) , scale = 0.1) -> Marker:
     m = Marker()
     m.header = header
     m.type = Marker.SPHERE
     m.id = id
     m.pose.position = pos
     m.color = color
-    m.scale.x = 0.1
-    m.scale.y = 0.1
-    m.scale.z = 0.1
+    m.scale.x = scale
+    m.scale.y = scale
+    m.scale.z = scale
     return m
 
 

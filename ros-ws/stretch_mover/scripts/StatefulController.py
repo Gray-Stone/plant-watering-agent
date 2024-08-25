@@ -135,6 +135,7 @@ class GoalMover(Node):
         MOVING = enum.auto()
         WATERING_AREA_FINDING = enum.auto()
         WATERING = enum.auto()
+        RETURN_HOME = enum.auto
 
     def pub_marker(self, m: Marker):
         self.marker_pub.publish(m)
@@ -311,6 +312,8 @@ class GoalMover(Node):
 
         elif self.state == self.CmdStates.WATERING:
             self.state_update(await self.watering_state())
+        elif self.state == self.CmdStates.RETURN_HOME:
+            self.state_update(await self.homing_state())
 
         else:
             self.get_logger().error(f"Stuck in non-existing state: {self.state}")
@@ -458,7 +461,7 @@ class GoalMover(Node):
             self.info("|| =============== EXPLORE ALL FINISHED! ================= ||\n"
             "no more valid frontier")
             self.clear_marker(self.WAVE_FRONT_MARKER_ID)
-            return self.CmdStates.IDLE
+            return self.CmdStates.RETURN_HOME
 
 
 
@@ -543,7 +546,7 @@ class GoalMover(Node):
             obj = self.skipped_pot_objects.popleft()
         else:
             self.get_logger().warn(f"{len(self.known_obj_list.objects)} locations all visited!")
-            return self.CmdStates.IDLE
+            return self.CmdStates.RETURN_HOME
 
         if obj.object_class != self.PLANT_CLASS_ID:
             self.get_logger().warn(f"Skipping Object typeof type {obj.object_class} ")
@@ -792,6 +795,47 @@ class GoalMover(Node):
         await self.switch_gamepad_service.call_async(TriggerSrv.Request())
 
         return self.CmdStates.PAUSE_BEFORE_NEXT
+
+
+    async def homing_state(self):
+        self.get_logger().info(f"switching to nav mode")
+        ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
+        self.get_logger().info(f"ret from switch nav {ret} ")
+
+        # To ensure camera is looking where robot is going.
+        await self.ResetCamera()
+
+        nav_goal = NavigateToPose.Goal()
+        nav_goal.pose.header.frame_id = self.world_frame
+        nav_goal.pose.header.stamp = self.get_clock().now().to_msg()
+        nav_goal.pose.pose.position.x =0.0
+        nav_goal.pose.pose.position.y =0.0
+        nav_goal.pose.pose.position.z =0.0
+        nav_goal.pose.pose.orientation.x = 0.0
+        nav_goal.pose.pose.orientation.y = 0.0
+        nav_goal.pose.pose.orientation.z = 0.0
+        nav_goal.pose.pose.orientation.w = 1.0
+
+        for i in range(3):
+            result: NavigateToPose.Result
+            status, result = await self.ActionSendAwait(
+                nav_goal,
+                self.navigate_to_pose_client,
+                # print_fb,
+            )
+            if status != GoalStatus.STATUS_SUCCEEDED:
+                self.get_logger().warn(f"Did not get successful goal result, got {status}")
+            else:
+                # This is the successful break condition.
+                break
+        else:
+            self.get_logger().error(
+                f"Repeated Failure trying to nav to {nav_goal.pose.pose.position}")
+            self.error("Going back and select next plant.")
+            return self.CmdStates.IDLE
+
+        return self.CmdStates.IDLE
+
 
     async def lower_arm_to_nav(self):
         await self.move_single_joint("joint_lift", 0.28, duration=2.0)

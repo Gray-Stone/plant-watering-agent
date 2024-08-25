@@ -48,6 +48,7 @@ from control_msgs.action import FollowJointTrajectory
 
 from threading import Lock
 
+from threading import Event
 
 def get_z_angle_to_point(point: Point):
     return normalize_angle(math.atan2(point.y, point.x))
@@ -108,10 +109,12 @@ class GoalMover(Node):
 
     PLANT_CLASS_ID = 0
     WATERING_AREA_CLASS_ID = 1
-    
+
     POI_MARKER_ID = 99
     NAV_PLANED_LOC_MARKER_ID = 89
     WAVE_FRONT_MARKER_ID = 34
+    WATERED_PLANT_MARKER_ID = 78
+
 
     PLAN_GOAL_CLEARANCE_RADIUS = 0.4
     FRONTIER_REACHABLE_RADIUS = 0.22
@@ -171,14 +174,15 @@ class GoalMover(Node):
         self.known_obj_list: KnownObjectList = None
         self.skipped_pot_objects: deque[KnownObject] = deque()
         self.js_map: dict[str, float] = {}
-        
+
         self.next_planning_object_idx = 0
-        self.current_frontier_pose :  PoseStamped = None 
+        self.successful_planned_pose: PoseStamped = None
         self.current_chasing_plant: KnownObject = None
         self.current_watering_obj: KnownObject = None
-        self.successful_planned_pose: PoseStamped = None
 
         self.map_lock = Lock() # Specially when frontier expanding, Lock is necessary.
+        self.ext_watering_event = Event()
+
         # List of skipped pots
 
         self.state = self.CmdStates.IDLE
@@ -241,6 +245,9 @@ class GoalMover(Node):
                                                self.joint_state_cb,
                                                2,
                                                callback_group=self.data_update_cb_group)
+
+        self.watering_server = self.create_service(TriggerSrv , "watering_trigger" , self.trigger_water)
+
         ## main timer
         self.create_timer(0.5, self.main_timer)
         self.get_logger().info("Node configured, timer created!")
@@ -272,6 +279,21 @@ class GoalMover(Node):
         self.state = new_state
         return
 
+    def trigger_water(self , request, response:TriggerSrv.Response):
+        # This is the one to trigger a watering action
+
+        # Must be in idle state to start this.
+        if self.state != self.CmdStates.IDLE:
+            response.success = False
+            response.message = f"Cannot start watering in {self.state}"
+            return response
+
+        self.ext_watering_event.set()
+        response.success = True
+        response.message = f"Trigger set"
+        return response
+            
+
     """####################### 
     State machines ! 
     ######################### 
@@ -279,6 +301,24 @@ class GoalMover(Node):
 
     async def main_timer(self):
         # await self.debug_state()
+
+        if self.ext_watering_event.is_set():
+            self.clear_marker(self.WATERED_PLANT_MARKER_ID)
+            self.clear_marker(self.POI_MARKER_ID)
+            self.clear_marker(self.NAV_PLANED_LOC_MARKER_ID)
+            self.clear_marker(self.WAVE_FRONT_MARKER_ID)
+
+            # Clears all cached state variables.
+            self.next_planning_object_idx = 0
+            self.successful_planned_pose = None
+            self.current_chasing_plant = None
+            self.current_watering_obj = None
+            self.skipped_pot_objects.clear()
+
+            # Jump into the state of watering.
+            self.state_update(self.CmdStates.PAUSE_BEFORE_NEXT)
+            self.ext_watering_event.clear() 
+
 
         # This is the main logic.
         if self.state == self.CmdStates.IDLE:
@@ -288,7 +328,7 @@ class GoalMover(Node):
 
         elif self.state == self.CmdStates.EXPLORE_PLANNING:
             self.state_update(await self.explore_planning_state())
-            
+
         elif self.state == self.CmdStates.EXPLORE:
             self.state_update(await self.explore_state())
 
@@ -296,7 +336,6 @@ class GoalMover(Node):
             await self.switch_gamepad_service.call_async(TriggerSrv.Request())
         elif self.state == self.CmdStates.PAUSE_BEFORE_NEXT:
             self.state_update(await self.pause_before_next_state())
-        # TODO, maybe add a camera set, tilt of -0.7568123906306684 seems low and good for nav.
 
         elif self.state == self.CmdStates.PLANT_SELECTION:
             self.state_update(await self.plant_selection_state())
@@ -427,7 +466,7 @@ class GoalMover(Node):
             raise RuntimeError(f"Can not get robot's base location in map frame!")
         self.info(f"Current robot location {robot_start_point}")
         with self.map_lock:
-            
+
             # This way we set id from here.
             def pub_cb(m:Marker):
                 m.id = self.WAVE_FRONT_MARKER_ID
@@ -437,7 +476,7 @@ class GoalMover(Node):
             self.info(f"Got {len(frontier_cells)} frontier cells")
             goal_point = None
             # We skip all cells that's under robot.
-            
+
             for cell in frontier_cells:
                 cell_in_world =self.map_helper.map_loc_to_world_point(cell)
                 distance = point_point_distanec(cell_in_world , robot_start_point.point)
@@ -461,12 +500,13 @@ class GoalMover(Node):
             self.info("|| =============== EXPLORE ALL FINISHED! ================= ||\n"
             "no more valid frontier")
             self.clear_marker(self.WAVE_FRONT_MARKER_ID)
+            self.successful_planned_pose = None
             return self.CmdStates.RETURN_HOME
 
 
 
     async def explore_state(self):
-                # First put robot in nav mode
+        # First put robot in nav mode
         self.get_logger().info(f"switching to nav mode")
         ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
         self.get_logger().info(f"ret from switch nav {ret} ")
@@ -493,16 +533,23 @@ class GoalMover(Node):
             self.get_logger().error(
                 f"Repeated Failure trying to nav to {nav_goal.pose.pose.position}")
             self.error("Going back and select next plant.")
-            return self.CmdStates.PAUSE_BEFORE_NEXT
+            self.successful_planned_pose = None
+            return self.CmdStates.IDLE
 
         self.clear_marker(self.POI_MARKER_ID)
         self.clear_marker(self.NAV_PLANED_LOC_MARKER_ID)
         self.clear_marker(self.WAVE_FRONT_MARKER_ID)
+        self.successful_planned_pose = None
         return self.CmdStates.EXPLORE_PLANNING
 
 
 
     async def pause_before_next_state(self):
+        """
+        This is a state of just a bit of camera movement. 
+        """
+
+
         if len(self.js_map) < 7:
             # This is just launch, we at least want js to be updated
             return
@@ -515,8 +562,10 @@ class GoalMover(Node):
             ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
             self.get_logger().info(f"ret from switch nav {ret} ")
 
+            await self.move_single_joint("joint_head_tilt", -0.5)
+            # Look behind itself.
+            await self.move_single_joint("joint_head_pan", -3.14 , velocity=0.3)
             await self.move_single_joint("joint_head_tilt", -0.25)
-            # await self.camera_scan_around(pan_delta=1.5 ,tilt_delta=0.0 , velocity=0.2)
 
             self.pause_start_time = time.time()
             return self.CmdStates.PAUSE_BEFORE_NEXT
@@ -546,6 +595,10 @@ class GoalMover(Node):
             obj = self.skipped_pot_objects.popleft()
         else:
             self.get_logger().warn(f"{len(self.known_obj_list.objects)} locations all visited!")
+            self.next_planning_object_idx = 0
+            self.current_watering_obj = None
+            self.current_chasing_plant = None
+
             return self.CmdStates.RETURN_HOME
 
         if obj.object_class != self.PLANT_CLASS_ID:
@@ -775,6 +828,13 @@ class GoalMover(Node):
         text_pos.point.z += 0.5
 
         self.pub_marker(MakeTextMarker(self.TEXT_INFO_ID, "Watered!", text_pos))
+
+        self.pub_marker(
+            MakeSphereMaker(self.WATERED_PLANT_MARKER_ID, watering_loc.point, watering_loc.header,
+                            ColorRGBA(r=1.0, g=0.1, b=0.1, a=0.9)),
+            scale=0.4,
+        )
+
 
         time.sleep(2.0)
         self.warn("Retracting arm ! ")

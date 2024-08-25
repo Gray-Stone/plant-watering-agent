@@ -117,7 +117,7 @@ class GoalMover(Node):
 
 
     PLAN_GOAL_CLEARANCE_RADIUS = 0.4
-    FRONTIER_REACHABLE_RADIUS = 0.22
+    FRONTIER_REACHABLE_RADIUS = 0.35
     MAX_PLAN_OFFSET_RADIUS = 1.1  # arm length is 0.52
     MIN_PLAN_OFFSET_RADIUS = 0.55  # We want to have some distance so arm could extend
     POT_TO_WATERING_DIS_THRESHOLD = 0.24
@@ -170,6 +170,8 @@ class GoalMover(Node):
             "known_object_topic").get_parameter_value().string_value
 
         #### Member Vars
+        self.first_explore = True
+
         self.map_helper: OccupancyGridHelper = None
         self.known_obj_list: KnownObjectList = None
         self.skipped_pot_objects: deque[KnownObject] = deque()
@@ -441,13 +443,19 @@ class GoalMover(Node):
         if not self.NavStartupMap():
             return self.CmdStates.EXPLORE_PLANNING
 
+            
+
         self.get_logger().info(f"switching to nav mode")
         ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
         self.get_logger().info(f"ret from switch nav {ret} ")
 
         # Look around with camera
         await self.move_single_joint("joint_head_tilt", -0.8, velocity=1.0 , fail_able= True)
-        await self.camera_scan_around(pan_delta=1.8 , velocity=0.4)
+        if self.first_explore:
+            self.first_explore = False
+            await self.camera_scan_around(pan_delta=3.5 , velocity=0.4 )
+        else:
+            await self.camera_scan_around(pan_delta=1.8 , velocity=0.4 )
 
         # Need to give time for map to update
         time.sleep(1.0)
@@ -477,24 +485,25 @@ class GoalMover(Node):
             goal_point = None
             # We skip all cells that's under robot.
 
-            for cell in frontier_cells:
-                cell_in_world =self.map_helper.map_loc_to_world_point(cell)
-                distance = point_point_distanec(cell_in_world , robot_start_point.point)
-                if distance > self.PLAN_GOAL_CLEARANCE_RADIUS:
-                    goal_point = cell_in_world
-                    # We make a heading for this goal.
-                    # Point robot back to source + 90 deg
-                    diff_x = robot_start_point.point.x - goal_point.x
-                    diff_y = robot_start_point.point.y - goal_point.y
-                    heading_back_to_start = normalize_angle(math.atan2(diff_y, diff_x) + math.pi)
+        # Release map lock at this point. we are done searching
+        for cell in frontier_cells:
+            cell_in_world =self.map_helper.map_loc_to_world_point(cell)
+            distance = point_point_distanec(cell_in_world , robot_start_point.point)
+            if distance > self.PLAN_GOAL_CLEARANCE_RADIUS:
+                goal_point = cell_in_world
+                # We make a heading for this goal.
+                # Point robot back to source + 90 deg
+                diff_x = robot_start_point.point.x - goal_point.x
+                diff_y = robot_start_point.point.y - goal_point.y
+                heading_back_to_start = normalize_angle(math.atan2(diff_y, diff_x) + math.pi*0.2)
 
-                    # Check if this goal is plan-able
-                    maybe_plan_goal = await self.plan_nav_to_pose(goal_point,heading_back_to_start)
-                    if maybe_plan_goal is not None:
-                        self.successful_planned_pose = maybe_plan_goal
-                        self.info(f"FIND reachable and plan-able frontier: {maybe_plan_goal}")
-                        return self.CmdStates.EXPLORE
-
+                # Check if this goal is plan-able
+                maybe_plan_goal = await self.plan_nav_to_pose(goal_point,heading_back_to_start)
+                if maybe_plan_goal is not None:
+                    self.successful_planned_pose = maybe_plan_goal
+                    self.info(f"FIND reachable and plan-able frontier: {maybe_plan_goal}")
+                    return self.CmdStates.EXPLORE
+            time.sleep(0.1)
 
         if goal_point is None:
             self.info("|| =============== EXPLORE ALL FINISHED! ================= ||\n"
@@ -517,6 +526,7 @@ class GoalMover(Node):
         nav_goal = NavigateToPose.Goal()
         nav_goal.pose = self.successful_planned_pose
         nav_goal.pose.header.stamp = self.get_clock().now().to_msg()
+        self.info(f"Navigating to {nav_goal.pose.pose}")
         for i in range(3):
             result: NavigateToPose.Result
             status, result = await self.ActionSendAwait(
@@ -1233,9 +1243,9 @@ class GoalMover(Node):
         # Pan range -4.04 1.73
         pan_left = min(current_pan + pan_delta, 1.6)
         pan_right = max(current_pan - pan_delta, -4.04)
-        await self.move_single_joint("joint_head_pan", pan_left, velocity=velocity)
-        await self.move_single_joint("joint_head_pan", pan_right, velocity=velocity)
-        await self.move_single_joint("joint_head_pan", current_pan, velocity=velocity)
+        await self.move_single_joint("joint_head_pan", pan_left, velocity=velocity,fail_able=True)
+        await self.move_single_joint("joint_head_pan", pan_right, velocity=velocity,fail_able=True)
+        await self.move_single_joint("joint_head_pan", current_pan, velocity=velocity,fail_able=True)
 
         if tilt_delta < .05:
             return
@@ -1243,9 +1253,9 @@ class GoalMover(Node):
         # tilt range 0.49 -2.02
         tilt_up = min(current_tilt + tilt_delta, 0.45)
         tilt_down = max(current_tilt - tilt_delta, -1.8)
-        await self.move_single_joint("joint_head_tilt", tilt_up, velocity=velocity)
-        await self.move_single_joint("joint_head_tilt", tilt_down, velocity=velocity)
-        await self.move_single_joint("joint_head_tilt", current_tilt, velocity=velocity)
+        await self.move_single_joint("joint_head_tilt", tilt_up, velocity=velocity,fail_able=True)
+        await self.move_single_joint("joint_head_tilt", tilt_down, velocity=velocity,fail_able=True)
+        await self.move_single_joint("joint_head_tilt", current_tilt, velocity=velocity,fail_able=True)
 
     def build_rot_traj(self,
                        target_angle: float,

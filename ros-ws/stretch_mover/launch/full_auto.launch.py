@@ -57,8 +57,8 @@ def generate_launch_description():
     # These are things that needs to use yolo.
 
     # This one have way too much false positive
-    # model_path = str(Path(stretch_mover_share) / "models/lamb_10kpot_cont_watering_area_2.pt") 
-    model_path = str(Path(stretch_mover_share) / "models/lamb_watering_pot_2.pt")
+    model_path = str(Path(stretch_mover_share) / "models/cont_10k_water_pot_500.pt")
+    model_path = str(Path(stretch_mover_share) / "models/fresh_water_pot_500.pt")
 
     yolo_params = {
         'input_topic': '/camera/color/image_raw',

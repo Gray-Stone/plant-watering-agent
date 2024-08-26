@@ -115,6 +115,8 @@ class GoalMover(Node):
     WAVE_FRONT_MARKER_ID = 34
     WATERED_PLANT_MARKER_ID = 78
 
+    MARKER_NAMESPACE = "state_controller"
+
 
     PLAN_GOAL_CLEARANCE_RADIUS = 0.4
     FRONTIER_REACHABLE_RADIUS = 0.35
@@ -141,6 +143,7 @@ class GoalMover(Node):
         RETURN_HOME = enum.auto
 
     def pub_marker(self, m: Marker):
+        m.ns = self.MARKER_NAMESPACE
         self.marker_pub.publish(m)
 
     def __init__(self, mode_switch_node: ModeSwitchNode):
@@ -175,6 +178,7 @@ class GoalMover(Node):
         self.map_helper: OccupancyGridHelper = None
         self.known_obj_list: KnownObjectList = None
         self.skipped_pot_objects: deque[KnownObject] = deque()
+        self.watered_objects: deque[KnownObject] = deque()
         self.js_map: dict[str, float] = {}
 
         self.next_planning_object_idx = 0
@@ -294,7 +298,7 @@ class GoalMover(Node):
         response.success = True
         response.message = f"Trigger set"
         return response
-            
+
 
     """####################### 
     State machines ! 
@@ -309,6 +313,7 @@ class GoalMover(Node):
             self.clear_marker(self.POI_MARKER_ID)
             self.clear_marker(self.NAV_PLANED_LOC_MARKER_ID)
             self.clear_marker(self.WAVE_FRONT_MARKER_ID)
+            self.clear_marker(self.TEXT_INFO_ID)
 
             # Clears all cached state variables.
             self.next_planning_object_idx = 0
@@ -316,10 +321,11 @@ class GoalMover(Node):
             self.current_chasing_plant = None
             self.current_watering_obj = None
             self.skipped_pot_objects.clear()
+            self.watered_objects.clear()
 
             # Jump into the state of watering.
             self.state_update(self.CmdStates.PAUSE_BEFORE_NEXT)
-            self.ext_watering_event.clear() 
+            self.ext_watering_event.clear()
 
 
         # This is the main logic.
@@ -335,7 +341,6 @@ class GoalMover(Node):
             self.state_update(await self.explore_state())
 
 
-            await self.switch_gamepad_service.call_async(TriggerSrv.Request())
         elif self.state == self.CmdStates.PAUSE_BEFORE_NEXT:
             self.state_update(await self.pause_before_next_state())
 
@@ -443,22 +448,31 @@ class GoalMover(Node):
         if not self.NavStartupMap():
             return self.CmdStates.EXPLORE_PLANNING
 
-            
-
         self.get_logger().info(f"switching to nav mode")
         ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
         self.get_logger().info(f"ret from switch nav {ret} ")
 
         # Look around with camera
-        await self.move_single_joint("joint_head_tilt", -0.8, velocity=1.0 , fail_able= True)
+        await self.move_single_joint("joint_head_tilt", -0.6, velocity=1.0 , fail_able= True)
         if self.first_explore:
+            # First look around, so most range are lid up.
+            await self.camera_scan_around(pan_delta=3.5 , velocity=0.25 )
+            
+            # Then point camera to left, and spin for a bit to cover the corner behind lift.s
             self.first_explore = False
-            await self.camera_scan_around(pan_delta=3.5 , velocity=0.4 )
+            await self.move_single_joint("joint_head_pan", 0.8, velocity=0.5 , fail_able= True)
+            point_on_left = PointStamped()
+            point_on_left.header.frame_id = self.robot_baseframe
+            # Basically want robot to look into +y direction, where its own pole is that it can't scan using camera head.s
+            point_on_left.point.y = 0.5
+            point_on_left.point.x = -0.1
+
+            await self.turn_info_plant_cmdvel(self.get_point_in_frame(point_on_left,self.world_frame) , vel_max_clamp= 0.3)
         else:
-            await self.camera_scan_around(pan_delta=1.8 , velocity=0.4 )
+            await self.camera_scan_around(pan_delta=1.8 , velocity=0.25 )
 
         # Need to give time for map to update
-        time.sleep(1.0)
+        time.sleep(2.0)
 
         # Find a spot to frontier over.
         # Need to know where robot is.
@@ -495,10 +509,11 @@ class GoalMover(Node):
                 # Point robot back to source + 90 deg
                 diff_x = robot_start_point.point.x - goal_point.x
                 diff_y = robot_start_point.point.y - goal_point.y
-                heading_back_to_start = normalize_angle(math.atan2(diff_y, diff_x) + math.pi*0.2)
+                # Don't look back at start, it doesn't work well.
+                heading = normalize_angle( - math.atan2(diff_y, diff_x) )
 
                 # Check if this goal is plan-able
-                maybe_plan_goal = await self.plan_nav_to_pose(goal_point,heading_back_to_start)
+                maybe_plan_goal = await self.plan_nav_to_pose(goal_point,heading)
                 if maybe_plan_goal is not None:
                     self.successful_planned_pose = maybe_plan_goal
                     self.info(f"FIND reachable and plan-able frontier: {maybe_plan_goal}")
@@ -810,8 +825,6 @@ class GoalMover(Node):
         # Final lineup using the wrist.
         # The angle from wrist joint, into the plant is what's needed.
 
-        # Likely to be link_wrist_yaw
-
         # link_wrist_yaw is pointing z down, and in urdf, the joint is     <axis xyz="0.0 0.0 -1.0"/>
         # Need to flip the angle comming out here.
 
@@ -837,13 +850,15 @@ class GoalMover(Node):
         text_pos = watering_loc
         text_pos.point.z += 0.5
 
+        self.watered_objects.append(self.current_chasing_plant )
         self.pub_marker(MakeTextMarker(self.TEXT_INFO_ID, "Watered!", text_pos))
 
         self.pub_marker(
-            MakeSphereMaker(self.WATERED_PLANT_MARKER_ID, watering_loc.point, watering_loc.header,
-                            ColorRGBA(r=1.0, g=0.1, b=0.1, a=0.9)),
-            scale=0.4,
-        )
+            MakeSphereMaker(self.WATERED_PLANT_MARKER_ID,
+                            watering_loc.point,
+                            watering_loc.header,
+                            ColorRGBA(r=1.0, g=0.1, b=0.1, a=0.9),
+                            scale=0.4))
 
 
         time.sleep(2.0)
@@ -860,10 +875,6 @@ class GoalMover(Node):
         self.warn(
             f"Watered plant with id {self.current_chasing_plant.id} at {self.current_chasing_plant.space_loc}"
         )
-
-        # TODO remove his debug thing
-        await self.switch_gamepad_service.call_async(TriggerSrv.Request())
-
         return self.CmdStates.PAUSE_BEFORE_NEXT
 
 
@@ -972,10 +983,11 @@ class GoalMover(Node):
             for maybe_coord in self.map_helper.GetRing(target_map_coord, ring_grid_rad):
                 maybe_valid,  checked_coords = self.map_helper.CheckEmptyCircle(
                     maybe_coord, check_cell_rad)
-                debug_marker = self.map_helper.color_sphere_gen(checked_coords,
-                                                                id=self.NAV_PLANED_LOC_MARKER_ID,
-                                                                color=COLOR_MSG_LIST_RGBW[1])
-                self.pub_marker(debug_marker)
+                # TODO this marker is not ID so won't be cleared.
+                # debug_marker = self.map_helper.color_sphere_gen(checked_coords,
+                #                                                 id=self.NAV_PLANED_LOC_MARKER_ID,
+                #                                                 color=COLOR_MSG_LIST_RGBW[1])
+                # self.pub_marker(debug_marker)
 
                 if maybe_valid:
                     planning_xy = self.map_helper.map_loc_to_world(maybe_coord)
@@ -1015,7 +1027,7 @@ class GoalMover(Node):
             )
             return None
 
-    async def turn_info_plant_cmdvel(self, target_point: Point, offset=0):
+    async def turn_info_plant_cmdvel(self, target_point: PointStamped, offset=0 , vel_max_clamp = 0.8):
 
         self.get_logger().warn("switching to nav mode ")
 
@@ -1025,7 +1037,7 @@ class GoalMover(Node):
 
         loc_base = self.get_point_in_frame(target_point, self.robot_baseframe)
         self.get_logger().info(f"Target's location in base frame is {loc_base}")
-        self.marker_pub.publish(
+        self.pub_marker(
             MakeCylinderMarker(id=self.POI_MARKER_ID,
                                pos=loc_base.point,
                                header=loc_base.header,
@@ -1041,13 +1053,15 @@ class GoalMover(Node):
         self.get_logger().info(f"switch pos RET {ret} ")
         self.info(f"Initial angle offset: {base_diff_offset_angle}")
 
-        while abs(base_diff_offset_angle) > 0.03:
+        ang_vel_gain = 0.5
+
+        while abs(base_diff_offset_angle) > 0.05:
 
             # let's do min 0.1 max 1.0
-            clamped_cmd_mag = max(min(abs(base_diff_offset_angle * 0.5), 1.0), 0.08)
+            clamped_cmd_mag = max(min(abs(base_diff_offset_angle * ang_vel_gain), vel_max_clamp ), 0.08)
 
             cmd_twist = Twist()
-            cmd_twist.angular.z = clamped_cmd_mag * sign(base_diff_offset_angle)
+            cmd_twist.angular.z = clamped_cmd_mag * sign(base_diff_offset_angle) 
             self.info(f"amount to turn {base_diff_offset_angle} , z vel {cmd_twist.angular.z}")
 
             self.cmd_vel_pub.publish(cmd_twist)
@@ -1055,12 +1069,6 @@ class GoalMover(Node):
             time.sleep(0.02)
 
             loc_base = self.get_point_in_frame(target_point, self.robot_baseframe)
-
-            self.marker_pub.publish(
-                MakeCylinderMarker(id=101,
-                                   pos=loc_base.point,
-                                   header=loc_base.header,
-                                   diameter=0.08))
 
             base_diff_angle = math.atan2(loc_base.point.y, loc_base.point.x)
             base_diff_offset_angle = normalize_angle(base_diff_angle + offset)
@@ -1480,6 +1488,7 @@ class GoalMover(Node):
 
     def clear_marker(self, marker_id):
         m = Marker()
+        m.ns = self.MARKER_NAMESPACE
         m.id = marker_id
         m.action = Marker.DELETEALL
         self.pub_marker(m)

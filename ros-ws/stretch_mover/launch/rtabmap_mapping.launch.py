@@ -29,17 +29,17 @@ def generate_launch_description():
         "RGBD/CreateOccupancyGrid": 'True',
         # Haven't see other diff robot using this.
         "Odom/Holonomic": 'False',
-        "Grid/RangeMax": '4.0',
+        "Grid/RangeMax": '2.5',
         
         # rough value from the stored mode.
         "Grid/FootprintLength": "0.5",
-        "Grid/FootprintWidth": "0.5",
+        "Grid/FootprintWidth": "0.6",
         "Grid/FootprintHeight": "1.2",
 
         "Grid/MaxObstacleHeight": '2.0',
         "Grid/MaxGroundHeight": '0.1',
         "Grid/RayTracing": 'True',
-        "Grid/CellSize": "0.025" # default 0.05
+        "Grid/CellSize": "0.020" # default 0.05
     }
     rtabmap_mapping_node = Node(
         package='rtabmap_slam',

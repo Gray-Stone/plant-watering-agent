@@ -98,11 +98,11 @@ controller_server:
       max_vel_y: 0.0
       max_vel_theta: 0.8
       min_speed_xy: 0.0
-      max_speed_xy: 0.26
+      max_speed_xy: 0.20
       min_speed_theta: 0.0
-      acc_lim_x: 2.0
+      acc_lim_x: 1.5
       acc_lim_y: 0.0
-      acc_lim_theta: 3.2
+      acc_lim_theta: 2.0
       decel_lim_x: -3.5
       decel_lim_y: 0.0
       decel_lim_theta: -3.2
@@ -113,7 +113,7 @@ controller_server:
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.35
+      xy_goal_tolerance: 0.4
       trans_stopped_velocity: 0.25
       short_circuit_trajectory_evaluation: True
       stateful: True
@@ -140,7 +140,7 @@ global_costmap:
       use_sim_time: False
       # robot_radius: 0.55
       footprint: "[ [0.1, 0.2],[0.25,0.09] ,[0.4, 0.0], [0.4, -0.2], [0.3,-0.4], [0.08, -0.58] , [-0.15, -0.58] , [-0.22,-0.42] , [-0.28,-0.25] , [-0.33 , -0.22] , [-0.33, 0.2] ]"
-      resolution: 0.05
+      resolution: 0.020
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer", "stvl_layer"]
       obstacle_layer:
@@ -235,7 +235,7 @@ local_costmap:
       rolling_window: true
       width: 4
       height: 4
-      resolution: 0.05
+      resolution: 0.020
       # start at +x+y (side without gripper), then go clock-wise
       footprint: "[ [0.1, 0.2], [0.1, -0.2], [0.1,-0.47], [0.08, -0.55] , [-0.15, -0.55] , [-0.17,-0.47] , [-0.2,-0.25] , [-0.3 , -0.2] , [-0.3, 0.2] ]"
       plugins: ["obstacle_layer", "inflation_layer", "stvl_layer"]

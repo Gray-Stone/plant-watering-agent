@@ -69,7 +69,7 @@ def MakeCylinderMarker(id,
 def MakeTextMarker(id,
                    data: str,
                    pos: PointStamped,
-                   color=ColorRGBA(r=0.8, g=0.4, b=0.8, a=1.0),
+                   color=ColorRGBA(r=0.2, g=0.1, b=1.0, a=1.0),
                    scale=0.15) -> Marker:
     m = Marker()
     m.header = pos.header

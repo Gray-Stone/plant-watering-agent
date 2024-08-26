@@ -119,8 +119,8 @@ class GoalMover(Node):
     MARKER_NAMESPACE = "state_controller"
 
 
-    PLAN_GOAL_CLEARANCE_RADIUS = 0.4
-    FRONTIER_REACHABLE_RADIUS = 0.4
+    PLAN_GOAL_CLEARANCE_RADIUS = 0.5
+    FRONTIER_REACHABLE_RADIUS = 0.5
     MAX_PLAN_OFFSET_RADIUS = 1.1  # arm length is 0.52
     MIN_PLAN_OFFSET_RADIUS = 0.55  # We want to have some distance so arm could extend
     POT_TO_WATERING_DIS_THRESHOLD = 0.25
@@ -475,10 +475,10 @@ class GoalMover(Node):
             time.sleep(2.0)
         else:
             self.info(f"Panning camera head around for scanning")
-            await self.camera_scan_around(pan_delta=1.8 , velocity=0.2 )
+            await self.camera_scan_around(pan_delta=3.5 , velocity=0.2 )
 
         # Need to give time for map to update
-        time.sleep(2.0)
+        time.sleep(3.0)
 
         # Find a spot to frontier over.
         # Need to know where robot is.
@@ -903,7 +903,9 @@ class GoalMover(Node):
     def update_watered_list_markers(self):
 
         for idx, o in enumerate(self.watered_objects):
-            self.pub_marker(MakeTextMarker(self.TEXT_INFO_ID+ idx, "Watered!", o.space_loc))
+            text_loc =o.space_loc
+            text_loc.point.z += 0.3
+            self.pub_marker(MakeTextMarker(self.TEXT_INFO_ID+ idx, "Watered!", text_loc))
 
             self.pub_marker(
             MakeSphereMaker(self.WATERED_PLANT_MARKER_ID+ idx,
@@ -1249,7 +1251,12 @@ class GoalMover(Node):
             self.info("Successful! ")
         else:
             self.error(f"FAILED! TO do watering action! {result} ")
-            raise
+            time.sleep(0.5)
+            if self.js_map["joint_wrist_pitch"] > -0.06:
+                self.warn(f"Wrist is mostly back to flat, it likely the gravity causing it to not actually pull up. ignoring it.")
+                return True
+            else:
+                raise RuntimeError(f"Pour water action failed. Current js \n{self.js_map.items()}")
         return True
 
     def get_point_in_frame(self, target_point, frame_name):
@@ -1536,6 +1543,8 @@ class GoalMover(Node):
     def clear_marker(self, marker_id):
         self.info(f"Clearing marker id {marker_id}")
         m = Marker()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.header.frame_id = "map"
         m.ns = self.MARKER_NAMESPACE
         m.id = marker_id
         m.action = Marker.DELETEALL

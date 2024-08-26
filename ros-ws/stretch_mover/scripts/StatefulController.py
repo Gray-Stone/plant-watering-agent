@@ -119,10 +119,10 @@ class GoalMover(Node):
 
 
     PLAN_GOAL_CLEARANCE_RADIUS = 0.4
-    FRONTIER_REACHABLE_RADIUS = 0.35
+    FRONTIER_REACHABLE_RADIUS = 0.4
     MAX_PLAN_OFFSET_RADIUS = 1.1  # arm length is 0.52
     MIN_PLAN_OFFSET_RADIUS = 0.55  # We want to have some distance so arm could extend
-    POT_TO_WATERING_DIS_THRESHOLD = 0.24
+    POT_TO_WATERING_DIS_THRESHOLD = 0.25
 
     TEXT_INFO_ID = 79
 
@@ -455,6 +455,7 @@ class GoalMover(Node):
         # Look around with camera
         await self.move_single_joint("joint_head_tilt", -0.6, velocity=1.0 , fail_able= True)
         if self.first_explore:
+            self.warn("This is First explore, turning robot for a full scan")
             # First look around, so most range are lid up.
             await self.camera_scan_around(pan_delta=3.5 , velocity=0.25 )
             
@@ -469,6 +470,7 @@ class GoalMover(Node):
 
             await self.turn_info_plant_cmdvel(self.get_point_in_frame(point_on_left,self.world_frame) , vel_max_clamp= 0.3)
         else:
+            self.info(f"Panning camera head around for scanning")
             await self.camera_scan_around(pan_delta=1.8 , velocity=0.25 )
 
         # Need to give time for map to update
@@ -483,7 +485,7 @@ class GoalMover(Node):
             if maybe_robot_point is not None:
                 robot_start_point = maybe_robot_point
                 break
-            time.sleep(0.5)
+            time.sleep(0.1)
         else:
             raise RuntimeError(f"Can not get robot's base location in map frame!")
         self.info(f"Current robot location {robot_start_point}")
@@ -587,6 +589,7 @@ class GoalMover(Node):
             ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
             self.get_logger().info(f"ret from switch nav {ret} ")
 
+            self.info(f"checking behind robot to make sure navigate-able")
             await self.move_single_joint("joint_head_tilt", -0.5)
             # Look behind itself.
             await self.move_single_joint("joint_head_pan", -3.14 , velocity=0.3)
@@ -838,7 +841,7 @@ class GoalMover(Node):
         self.info(
             f"Target in wrist frame at {loc_in_wrist} , calculated, flipped angle is {wrist_yaw_angle}"
         )
-        await self.move_single_joint_delta("joint_wrist_yaw", wrist_yaw_angle)
+        await self.move_single_joint_delta("joint_wrist_yaw", wrist_yaw_angle , warp_value=True)
 
         time.sleep(3.0)
 
@@ -879,6 +882,7 @@ class GoalMover(Node):
 
 
     async def homing_state(self):
+        self.info(f"Return back to home location")
         self.get_logger().info(f"switching to nav mode")
         ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
         self.get_logger().info(f"ret from switch nav {ret} ")
@@ -1142,9 +1146,9 @@ class GoalMover(Node):
         pitch_init = 0.09
         # pitch is abs mode.
 
-        lift_delta = 0.1881
-        arm_delta = 0.052801
-        pitch_target = -0.69
+        lift_delta = 0.2081
+        arm_delta = 0.053801
+        pitch_target = -0.68
 
         time_delta = 2.0
         current_time = 0.0
@@ -1205,7 +1209,7 @@ class GoalMover(Node):
         if (result.error_code == FollowJointTrajectory.Result.SUCCESSFUL):
             self.info("Successful! ")
         else:
-            self.error(f"FAILED! {result} ")
+            self.error(f"FAILED! TO do watering action! {result} ")
             raise
         return True
 
@@ -1230,13 +1234,14 @@ class GoalMover(Node):
         pan_angle = get_z_angle_to_point(loc_pan.point)
         self.info(
             f"Turning camera to look at relative point {loc_pan} , computed angle {pan_angle}")
-        await self.move_single_joint_delta("joint_head_pan", pan_angle)
+        # Because of warp angle, it's possible to give a delta of 3.1, then camera head will turn beyond limit.
+        await self.move_single_joint_delta("joint_head_pan", pan_angle , warp_value=True)
 
         loc_tilt = self.get_point_in_frame(loc_world, "link_head_tilt")
         tilt_angle = get_z_angle_to_point(loc_tilt.point)
         self.info(
             f"Turning camera to look at relative point {loc_tilt} , computed angle {tilt_angle}")
-        await self.move_single_joint_delta("joint_head_tilt", tilt_angle)
+        await self.move_single_joint_delta("joint_head_tilt", tilt_angle,warp_value=True)
 
         # link_head_tilt
 
@@ -1308,8 +1313,10 @@ class GoalMover(Node):
                                       joint_name: str,
                                       delta: float,
                                       duration=1.0,
-                                      fail_able=False) -> bool:
+                                      fail_able=False , warp_value = False) -> bool:
         actual_target = self.js_map[joint_name] + delta
+        if warp_value:
+            actual_target = normalize_angle(actual_target)
         return await self.move_single_joint(joint_name,
                                             actual_target,
                                             duration,

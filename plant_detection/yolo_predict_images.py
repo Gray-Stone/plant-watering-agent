@@ -29,7 +29,9 @@ if __name__ == "__main__":
     model = YOLO(args.model , task="segmentation")
     # 58: 'potted plant' this is the existing class.
     # https://docs.ultralytics.com/reference/engine/model/#ultralytics.engine.model.Model.predict
-    results: list[ultralytics.engine.results.Results] = model.predict(target_image_dir,save=True , )
+    results: list[ultralytics.engine.results.Results] = model.predict(target_image_dir,save=True ,batch=True  )
+
+    # results.save(pathlib.Path(args.model).stem())
 
     # current_path = pathlib.Path().resolve()
 

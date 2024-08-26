@@ -113,7 +113,8 @@ class GoalMover(Node):
     POI_MARKER_ID = 99
     NAV_PLANED_LOC_MARKER_ID = 89
     WAVE_FRONT_MARKER_ID = 34
-    WATERED_PLANT_MARKER_ID = 78
+    WATERED_PLANT_MARKER_ID = 45
+    TEXT_INFO_ID = 55
 
     MARKER_NAMESPACE = "state_controller"
 
@@ -124,7 +125,6 @@ class GoalMover(Node):
     MIN_PLAN_OFFSET_RADIUS = 0.55  # We want to have some distance so arm could extend
     POT_TO_WATERING_DIS_THRESHOLD = 0.25
 
-    TEXT_INFO_ID = 79
 
     class CmdStates(Enum):
         IDLE = enum.auto()
@@ -321,6 +321,8 @@ class GoalMover(Node):
             self.current_chasing_plant = None
             self.current_watering_obj = None
             self.skipped_pot_objects.clear()
+            # for i in range(len(self.watered_objects)):
+            #     self.clear_marker(self.WATERED_PLANT_MARKER_ID + i)
             self.watered_objects.clear()
 
             # Jump into the state of watering.
@@ -458,7 +460,7 @@ class GoalMover(Node):
             self.warn("This is First explore, turning robot for a full scan")
             # First look around, so most range are lid up.
             await self.camera_scan_around(pan_delta=3.5 , velocity=0.25 )
-            
+
             # Then point camera to left, and spin for a bit to cover the corner behind lift.s
             self.first_explore = False
             await self.move_single_joint("joint_head_pan", 0.8, velocity=0.5 , fail_able= True)
@@ -468,10 +470,12 @@ class GoalMover(Node):
             point_on_left.point.y = 0.5
             point_on_left.point.x = -0.1
 
-            await self.turn_info_plant_cmdvel(self.get_point_in_frame(point_on_left,self.world_frame) , vel_max_clamp= 0.3)
+            await self.turn_info_plant_cmdvel(self.get_point_in_frame(point_on_left,self.world_frame) , vel_max_clamp= 0.1)
+            await self.camera_scan_around(pan_delta=0.4 , velocity=0.2 )
+            time.sleep(2.0)
         else:
             self.info(f"Panning camera head around for scanning")
-            await self.camera_scan_around(pan_delta=1.8 , velocity=0.25 )
+            await self.camera_scan_around(pan_delta=1.8 , velocity=0.2 )
 
         # Need to give time for map to update
         time.sleep(2.0)
@@ -501,12 +505,25 @@ class GoalMover(Node):
             goal_point = None
             # We skip all cells that's under robot.
 
+        # if len(frontier_cells) > 20:
+        #     # We need to down sample the frontiers
+
+
         # Release map lock at this point. we are done searching
         for cell in frontier_cells:
             cell_in_world =self.map_helper.map_loc_to_world_point(cell)
             distance = point_point_distanec(cell_in_world , robot_start_point.point)
             if distance > self.PLAN_GOAL_CLEARANCE_RADIUS:
                 goal_point = cell_in_world
+                goal_coords = self.map_helper.world_point_to_map(goal_point)
+                check_cell_rad = math.ceil(self.PLAN_GOAL_CLEARANCE_RADIUS /
+                                   self.map_helper.map_info.resolution)
+                # We actually pre-check the collision before bothering nav2 to do it.
+                clear , _ = self.map_helper.CheckEmptyCircle(goal_coords , check_cell_rad,occupied_threshold=100  )
+                if not clear:
+                    continue
+
+
                 # We make a heading for this goal.
                 # Point robot back to source + 90 deg
                 diff_x = robot_start_point.point.x - goal_point.x
@@ -520,14 +537,17 @@ class GoalMover(Node):
                     self.successful_planned_pose = maybe_plan_goal
                     self.info(f"FIND reachable and plan-able frontier: {maybe_plan_goal}")
                     return self.CmdStates.EXPLORE
-            time.sleep(0.1)
+            # time.sleep(0.1)
 
-        if goal_point is None:
-            self.info("|| =============== EXPLORE ALL FINISHED! ================= ||\n"
-            "no more valid frontier")
-            self.clear_marker(self.WAVE_FRONT_MARKER_ID)
-            self.successful_planned_pose = None
-            return self.CmdStates.RETURN_HOME
+        # either no goal or can't plan
+        self.info("|| =============== EXPLORE ALL FINISHED! ================= ||\n"
+        "no more valid frontier")
+
+        await self.move_single_joint("joint_wrist_pitch", 0.1, fail_able=True)
+
+        self.clear_marker(self.WAVE_FRONT_MARKER_ID)
+        self.successful_planned_pose = None
+        return self.CmdStates.RETURN_HOME
 
 
 
@@ -585,15 +605,15 @@ class GoalMover(Node):
             self.clear_marker(self.POI_MARKER_ID)
             # We don't want to look down, so arm don't generated shadows.
 
-            self.get_logger().info(f"switching to nav mode")
-            ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
-            self.get_logger().info(f"ret from switch nav {ret} ")
+            # self.get_logger().info(f"switching to nav mode")
+            # ret = await self.switch_nav_service.call_async(TriggerSrv.Request())
+            # self.get_logger().info(f"ret from switch nav {ret} ")
 
-            self.info(f"checking behind robot to make sure navigate-able")
-            await self.move_single_joint("joint_head_tilt", -0.5)
-            # Look behind itself.
-            await self.move_single_joint("joint_head_pan", -3.14 , velocity=0.3)
-            await self.move_single_joint("joint_head_tilt", -0.25)
+            # self.info(f"checking behind robot to make sure navigate-able")
+            # await self.move_single_joint("joint_head_tilt", -0.5)
+            # # Look behind itself.
+            # await self.move_single_joint("joint_head_pan", -3.14 , velocity=0.3)
+            # await self.move_single_joint("joint_head_tilt", -0.25)
 
             self.pause_start_time = time.time()
             return self.CmdStates.PAUSE_BEFORE_NEXT
@@ -769,8 +789,10 @@ class GoalMover(Node):
         await self.camera_look_at_object(watering_loc)
         time.sleep(1.0)  # Give yolo time to update
         self.current_watering_obj = self.refresh_object(self.current_watering_obj)
-        watering_loc = self.current_watering_obj.space_loc
+        self.current_chasing_plant = self.refresh_object(self.current_chasing_plant)
 
+        watering_loc = self.current_watering_obj.space_loc
+        plant_loc = self.current_chasing_plant.space_loc
         # Make sure we centered the wrist
         self.info(f"re-centering the wrist")
         await self.move_multi_joint(["joint_wrist_yaw", "joint_wrist_pitch", "joint_wrist_roll"],
@@ -779,7 +801,7 @@ class GoalMover(Node):
                                     fail_able=True)
 
         # And also retract the arm
-        if (self.get_wrist_extension_js() > 0.):
+        if (self.get_wrist_extension_js() > 0.05):
             self.info(f"collapsing arm")
             await self.move_multi_joint(
                 ["joint_arm_l3", "joint_arm_l2", "joint_arm_l1", "joint_arm_l0"], [0, 0, 0, 0],
@@ -792,7 +814,7 @@ class GoalMover(Node):
         loc_in_ee = self.get_point_in_frame(watering_loc, self.ee_frame)
         self.get_logger().info(f"current object loc in ee frame {loc_in_ee}")
         # This does needs a little extra.
-        lift_amount = loc_in_ee.point.z + 0.03
+        lift_amount = loc_in_ee.point.z + 0.05
         await self.move_single_joint_delta("joint_lift",
                                            lift_amount,
                                            duration=lift_amount / self.LIFT_VELOCITY_MAX + 0.5)
@@ -809,6 +831,12 @@ class GoalMover(Node):
         self.current_watering_obj = self.refresh_object(self.current_watering_obj)
         watering_loc = self.current_watering_obj.space_loc
 
+        # We want to know xy diff between arm and plant.s
+
+
+        # plant_water_xy_off = np.sqrt((plant_loc.point.x - watering_loc.point.x) **2 + (plant_loc.point.y - watering_loc.point.y))
+
+        # self.warn(f"Plant and watering area have offset of {plant_water_xy_off}")
         # Now we extend the arm to the plant.
         self.info(f"Extending arm")
         loc_in_ee = self.get_point_in_frame(watering_loc, self.ee_frame)
@@ -819,11 +847,11 @@ class GoalMover(Node):
             self.info(f"Arm already close enough to target.")
         else:
             # We don't do it all the way, leave a tiny tiny bit.
-            extension_delta = loc_in_ee.point.x - 0.08
-            self.info(f"extending arm for {extension_delta} amount")
+            extension_delta = loc_in_ee.point.x - 0.06
+            self.info(f"extending arm for {extension_delta} amount (reduced from {loc_in_ee.point.x})")
             if extension_delta > 0.52:
                 self.warn("arm extension value is too large, maybe should re-do moving?")
-            await self.move_single_joint_delta("wrist_extension", extension_delta, duration=2.0)
+            await self.move_single_joint_delta("wrist_extension", extension_delta, duration=3.5)
 
         # Final lineup using the wrist.
         # The angle from wrist joint, into the plant is what's needed.
@@ -854,20 +882,12 @@ class GoalMover(Node):
         text_pos.point.z += 0.5
 
         self.watered_objects.append(self.current_chasing_plant )
-        self.pub_marker(MakeTextMarker(self.TEXT_INFO_ID, "Watered!", text_pos))
-
-        self.pub_marker(
-            MakeSphereMaker(self.WATERED_PLANT_MARKER_ID,
-                            watering_loc.point,
-                            watering_loc.header,
-                            ColorRGBA(r=1.0, g=0.1, b=0.1, a=0.9),
-                            scale=0.4))
-
+        self.update_watered_list_markers()
 
         time.sleep(2.0)
         self.warn("Retracting arm ! ")
 
-        await self.move_single_joint("wrist_extension", 0.001, duration=2.0)
+        await self.move_single_joint("wrist_extension", 0.001, velocity= 0.1  )
 
         self.info(f"Turning the base back and lowering the lift.")
         # Now turn the base back. to clear for lowering the arm
@@ -879,6 +899,21 @@ class GoalMover(Node):
             f"Watered plant with id {self.current_chasing_plant.id} at {self.current_chasing_plant.space_loc}"
         )
         return self.CmdStates.PAUSE_BEFORE_NEXT
+
+    def update_watered_list_markers(self):
+
+        for idx, o in enumerate(self.watered_objects):
+            self.pub_marker(MakeTextMarker(self.TEXT_INFO_ID+ idx, "Watered!", o.space_loc))
+
+            self.pub_marker(
+            MakeSphereMaker(self.WATERED_PLANT_MARKER_ID+ idx,
+                            o.space_loc.point,
+                            o.space_loc.header,
+                            ColorRGBA(r=1.0, g=0.1, b=0.1, a=0.8),
+                            scale=0.6))
+
+
+
 
 
     async def homing_state(self):
@@ -901,6 +936,7 @@ class GoalMover(Node):
         nav_goal.pose.pose.orientation.z = 0.0
         nav_goal.pose.pose.orientation.w = 1.0
 
+        self.info(f"Sending nav goal to home")
         for i in range(3):
             result: NavigateToPose.Result
             status, result = await self.ActionSendAwait(
@@ -1065,7 +1101,7 @@ class GoalMover(Node):
             clamped_cmd_mag = max(min(abs(base_diff_offset_angle * ang_vel_gain), vel_max_clamp ), 0.08)
 
             cmd_twist = Twist()
-            cmd_twist.angular.z = clamped_cmd_mag * sign(base_diff_offset_angle) 
+            cmd_twist.angular.z = clamped_cmd_mag * sign(base_diff_offset_angle)
             self.info(f"amount to turn {base_diff_offset_angle} , z vel {cmd_twist.angular.z}")
 
             self.cmd_vel_pub.publish(cmd_twist)
@@ -1143,7 +1179,7 @@ class GoalMover(Node):
 
         lift_init = self.js_map["joint_lift"]
         arm_init = self.get_wrist_extension_js()
-        pitch_init = 0.09
+        pitch_init = 0.1
         # pitch is abs mode.
 
         lift_delta = 0.2081
@@ -1155,14 +1191,16 @@ class GoalMover(Node):
         traj_goal = FollowJointTrajectory.Goal()
         traj_goal.trajectory.joint_names = ["joint_lift", "wrist_extension", "joint_wrist_pitch"]
 
-        current_time += 0.2
-        # Add current location in
-        # Don't give it the init move, some how the dynamixal is really bad at tiny moves
-        j_p = JointTrajectoryPoint()
-        j_p.positions = [lift_init, arm_init, self.js_map["joint_wrist_pitch"]]
-        # j_p.velocities = [0.0, 0.0, 0.1 / 0.2]
-        j_p.time_from_start = self.build_duration(current_time)
-        traj_goal.trajectory.points.append(j_p)
+        # current_time += 0.2
+        # # Add current location in
+        # # Don't give it the init move, some how the dynamixal is really bad at tiny moves
+        # j_p = JointTrajectoryPoint()
+        # j_p.positions = [lift_init, arm_init, self.js_map["joint_wrist_pitch"]]
+        # # j_p.velocities = [0.0, 0.0, 0.1 / 0.2]
+        # j_p.time_from_start = self.build_duration(current_time)
+        # traj_goal.trajectory.points.append(j_p)
+
+        # This is pouring
 
         current_time += time_delta
         j_p = JointTrajectoryPoint()
@@ -1186,6 +1224,7 @@ class GoalMover(Node):
         # j_p.time_from_start = self.build_duration(current_time)
         # traj_goal.trajectory.points.append(j_p)
 
+        # This is retracking
         current_time += time_delta - 0.1
         # Add current location in
         j_p = JointTrajectoryPoint()
@@ -1312,7 +1351,7 @@ class GoalMover(Node):
     async def move_single_joint_delta(self,
                                       joint_name: str,
                                       delta: float,
-                                      duration=1.0,
+                                      duration=1.0, velocity = None ,
                                       fail_able=False , warp_value = False) -> bool:
         actual_target = self.js_map[joint_name] + delta
         if warp_value:
@@ -1320,6 +1359,7 @@ class GoalMover(Node):
         return await self.move_single_joint(joint_name,
                                             actual_target,
                                             duration,
+                                            velocity=velocity,
                                             fail_able=fail_able)
 
     async def move_single_joint(self,
@@ -1494,6 +1534,7 @@ class GoalMover(Node):
             "joint_arm_l1"] + self.js_map["joint_arm_l0"]
 
     def clear_marker(self, marker_id):
+        self.info(f"Clearing marker id {marker_id}")
         m = Marker()
         m.ns = self.MARKER_NAMESPACE
         m.id = marker_id
